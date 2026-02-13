@@ -1,0 +1,361 @@
+# Discord Race Prediction View
+class PredictionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+        #shared state
+        self.pos1 = None
+        self.pos2 = None
+        self.pos3 = None
+        self.pole = None
+        self.fastest_lap = None
+
+        #dropdowns with exlusitivity
+        self.pos1_select = PositionSelect("pos1",self)
+        self.pos2_select = PositionSelect("pos2",self)
+        self.pos3_select = PositionSelect("pos3",self)
+
+        #dropdowns without exclusivity
+        self.pole_select = SimpleSelect("pole",self)
+        self.fastest_lap_select = SimpleSelect("fastest_lap",self)
+
+        #add items to the view
+        for item in[
+            self.pos1_select,
+            self.pos2_select,
+            self.pos3_select,
+            self.pole_select,
+            self.fastest_lap_select,
+        ]:
+            self.add_item(item)
+
+    def available_drivers(self, current_pos):
+        used = {self.pos1, self.pos2, self.pos3}
+        used.discard(None)
+        
+        if current_pos:
+            used.discard(getattr(self, current_pos))
+
+        return [d for d in DRIVERS if d not in used]
+    
+    def refresh_dropdowns(self):
+        self.pos1_select.update_options()
+        self.pos2_select.update_options()
+        self.pos3_select.update_options()
+
+#Discord Race Prediction Selects
+class PositionSelect(discord.ui.Select):
+    def __init__(self, position, parent):
+        self.position = position
+        self.prediction_view = parent
+        super().__init__(
+            placeholder=f"Select {position.upper()}",
+            options =[discord.SelectOption(label=d) for d in DRIVERS],
+            min_values=1,
+            max_values=1,)
+    
+    def update_options(self):
+        available = self.prediction_view.available_drivers(self.position)
+        self.options = [discord.SelectOption(label=d) for d in available]
+        if getattr(self.prediction_view, self.position):
+            self.options.append(discord.SelectOption(label=getattr(self.prediction_view, self.position), default=True))
+    
+    async def callback(self, interaction: discord.Interaction):
+        selected_driver = self.values[0]
+        setattr(self.prediction_view, self.position, selected_driver)
+        self.prediction_view.refresh_dropdowns()
+        await interaction.response.edit_message(view=self.parent)
+
+class SimpleSelect(discord.ui.Select):
+    def __init__(self, field, parent):
+        self.field = field
+        self.prediction_view = parent
+        super().__init__(
+            placeholder=f"Select {field.replace('_', ' ').title()}",
+            options =[discord.SelectOption(label=d) for d in DRIVERS],
+            min_values=1,
+            max_values=1,)
+        
+    async def callback(self, interaction: discord.Interaction):
+        setattr(self.prediction_view, self.field, self.values[0])
+        await interaction.response.edit_message(view=self.prediction_view)
+_____________________________________________________________________________________
+
+await interaction.response.send_message(
+        "Predictions are closed.",
+        ephemeral = True
+)
+______________________________________________________________________________________
+
+class SubmitButton(discord.ui.Button):
+    def __init__(self, parent):
+        self.prediction_view = parent
+        super().__init__(label="Submit Predictions", style=discord.ButtonStyle.green)
+
+    async def callback(self, interaction: discord.Interaction):
+        now = datetime.now(timezone.utc)
+
+        if not predictions_open(
+            now,
+            lock_time,
+           ):
+            await interaction.response.send_message(
+                "Predictions are closed.",
+                ephemeral=True)
+            return
+        user_id = interaction.user.id
+        main_predictions[user_id] = {
+            "User_ID": interaction.user.id,
+            "Pos1": self.parent.pos1,
+            "Pos2": self.parent.pos2,
+            "Pos3": self.parent.pos3,
+            "Pole": self.parent.pole,
+            "Fastest_Lap": self.parent.fastest_lap,
+        }
+
+        #Now store in DB
+        await interaction.response.send_message(
+            f"Your predictions have been recorded: \n '''{list(main_predictions.items())}'''",
+              ephemeral=True)
+        
+        self.parent.stop()
+________________________________________________________________________________________________________________________
+
+def refresh_race_cache(now=None):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    # Get timing of the next Quali session
+    schedule = fastf1.get_event_schedule(2026)
+    schedule['Session1DateUtc'] = pd.to_datetime(schedule['Session1DateUtc'], utc=True)
+    future_races = schedule[schedule['Session1DateUtc'] > now]
+    next_race = future_races.iloc[0]
+    cache_race = future_races.iloc[1] if len(future_races) > 1 else None
+
+    race_number = int(next_race["RoundNumber"])
+    race_name = next_race["EventName"]
+    location = next_race["Location"]
+    country = next_race["Country"]
+    event_format = next_race["EventFormat"]
+
+
+    # Check if it's a sprint weekend using EventFormat column
+    is_sprint = "sprint" in event_format.lower()
+
+    lock_time = next_race["Session4DateUtc"]
+
+    sprint_lock_time = (
+        next_race["Session2DateUtc"] if is_sprint else None
+    )
+
+    next_refresh = (
+        cache_race["Session1DateUtc"] - timedelta(days=3)
+        if cache_race is not None
+        else None
+    )
+
+    return {
+        "race_number": race_number,
+        "race_name": race_name,
+        "location": location,
+        "country": country,
+        "event_format": event_format,
+        "is_sprint": is_sprint,
+        "lock_time": lock_time,
+        "sprint_lock_time": sprint_lock_time,
+        "next_refresh": next_refresh,
+    }
+
+_____________________________________________________________________________________
+
+async def poll_results_loop(bot):
+    await bot.wait_until_ready()
+    loop = asyncio.get_running_loop()
+
+    while not bot.is_closed():
+        # Run FastF1 safely
+        race_data = await loop.run_in_executor(None, race_results)
+
+        if race_data:
+            conn = get_connection()
+            saved = save_race_results(conn, race_data)
+
+            if saved:
+                sprint_data = await loop.run_in_executor(None, sprint_results)
+                if sprint_data:
+                    save_sprint_results(conn, sprint_data)
+
+                await score_race(race_data["race_number"])
+
+        await asyncio.sleep(600/)  # 10 minutes
+_____________________________________________________________________________________
+
+async def final_champions_loop(bot, check_interval: int = 3600):
+    await bot.wait_until_ready()
+    loop = asyncio.get_running_loop()
+
+    while not bot.is_closed():
+        # Run the check safely in executor
+        result = await loop.run_in_executor(None, get_final_champions_if_ready)
+
+        if result:
+            # Ergast results are plain strings
+            wdc_winner, wcc_winner = result
+
+            # Convert to user prediction format
+            wdc = wdc_winner[:3].upper()   # e.g., "hamilton" -> "HAM"
+            wcc = wcc_winner.capitalize()  # e.g., "mercedes" -> "Mercedes"
+
+            conn = get_connection()
+
+            # Save final champions in DB
+            save_final_champions(conn, wdc, wcc)
+            #print(f"Final champions recorded: WDC={wdc}, WCC={wcc}")
+
+            score_final_champions()
+            return
+
+        await asyncio.sleep(check_interval)
+_____________________________________________________________________________________
+def get_race_end_time(now = None, year=None):
+    if year is None:
+        year = YEAR
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    #print("Fetching F1 schedule...")
+    # Fetch schedule once
+    schedule = fastf1.get_event_schedule(year)
+    #print("Schedule fetched!")
+
+    # Convert only the columns we need to UTC-aware datetime
+    date_cols = ["Session5DateUtc"]
+    for col in date_cols:
+        schedule[col] = pd.to_datetime(schedule[col], utc=True, errors='coerce')#.dt.to_pydatetime()
+
+    # Keep only future races
+    future_races = schedule[schedule['Session5DateUtc'] > now]
+
+    if future_races.empty:
+        return None  # no upcoming races
+    #print (future_races)
+    next_race = future_races.iloc[0]
+    race_end_time_panda = next_race["Session5DateUtc"]
+    race_end_time = race_end_time_panda.to_pydatetime().astimezone(timezone.utc)
+    race_end_time += timedelta(hours = 12)
+    return race_end_time
+_____________________________________________________________________________________
+class PredictionSelect(discord.ui.Select):
+    def __init__(self, index, current_selection=None):
+        self.index = index
+        # Build options and mark the current selection as default if provided
+        options = [
+            discord.SelectOption(label=d, value=d, default=(d == current_selection))
+            for d in DRIVERS
+        ]
+        super().__init__(
+            placeholder=f"Pick driver for {PREDICTIONS[index]}",
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        now = get_now()
+
+        if not predictions_open(
+            now,
+            RACE_CACHE
+           ):
+            self.view.disable_all()
+            await interaction.edit_original_response(
+                content="🔒 Predictions are closed.",
+                view=self.view
+            )
+            return
+        
+        user_id = interaction.user.id
+        if user_id not in user_predictions:
+            user_predictions[user_id] = [None] * 5
+
+        selected_driver = self.values[0]
+        previous = user_predictions[user_id][self.index]
+
+        # For Positions 1-3, dynamically update other selects to prevent duplicates
+        if self.index < 3:
+            # other selections for positions 0-2 excluding this index
+            other_selected = {v for i, v in enumerate(user_predictions[user_id][:3]) if v and i != self.index}
+            # If another position already has this driver and it's not this position's previous value, reject
+            if selected_driver in other_selected and selected_driver != previous:
+                await interaction.followup.send(
+                    f"❌ {selected_driver} already selected for Positions 1-3. Pick a different driver!",
+                    ephemeral=True
+                )
+                return
+
+            # store the new selection
+            user_predictions[user_id][self.index] = selected_driver
+            save_race_predictions(
+                interaction.user.id,
+                interaction.user.name,
+                int(RACE_CACHE.get("race_number")),
+                RACE_CACHE.get("race_name"),
+                user_predictions[user_id]
+            )
+
+            # recompute taken drivers for positions 0-2
+            taken = {v for v in user_predictions[user_id][:3] if v}
+
+            # update options on other select children in this view
+            for child in list(self.view.children):
+                if isinstance(child, PredictionSelect) and child.index < 3:
+                    # allow the child's own current choice to remain visible
+                    curr = user_predictions[user_id][child.index]
+                    new_options = []
+                    for d in DRIVERS:
+                        if d not in taken or d == curr:
+                            new_options.append(discord.SelectOption(label=d, value=d, default=(d == curr)))
+                    child.options = new_options
+
+            # edit the message to apply the updated view
+            await interaction.edit_original_response(view=self.view)
+            #print(f"{interaction.user.name}'s predictions: {user_predictions[user_id]}")
+            return
+
+        # Fastest Lap and Pole can repeat drivers
+        user_predictions[user_id][self.index] = selected_driver
+        save_race_predictions(
+                interaction.user.id,
+                interaction.user.name,
+                int(RACE_CACHE.get("race_number")),
+                RACE_CACHE.get("race_name"),
+                user_predictions[user_id]
+            )
+        #print(f"{interaction.user.name}'s predictions: {user_predictions[user_id]}")
+        #await interaction.response.defer(ephemeral=True)
+
+class PredictionView(discord.ui.View):
+    def __init__(self, user_id=None):
+        super().__init__(timeout=300)
+        for i in range(5):
+            current = None
+            if user_id and user_id in user_predictions:
+                current = user_predictions[user_id][i]
+            self.add_item(PredictionSelect(i, current_selection=current))
+
+        now = get_now()
+        if not predictions_open(now, RACE_CACHE):
+            self.disable_all()
+
+    def disable_all(self):
+        for child in self.children:
+            child.disable = True
+
+@bot.tree.command(name="race_predict", description="Make your race predictions")
+async def predict(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
+            f"Make your predictions for the {RACE_CACHE.get("race_name")}:",
+            view=PredictionView(interaction.user.id),
+            ephemeral=True)
+    except Exception as e:
+        print(e)
