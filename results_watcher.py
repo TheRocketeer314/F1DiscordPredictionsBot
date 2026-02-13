@@ -6,10 +6,12 @@ from scoring import score_race
 from datetime import datetime, timezone, timedelta
 
 real_time = datetime.now(timezone.utc)
-TARGET = datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
-OFFSET = real_time - TARGET
+TARGET = None #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+if TARGET:
+    OFFSET = real_time - TARGET
 TEST_TIME = None
-TIME_MULTIPLE = 600.0
+TIME_MULTIPLE = 1.0
+SEASON = 2026
 
 def get_now():
     if TEST_TIME:

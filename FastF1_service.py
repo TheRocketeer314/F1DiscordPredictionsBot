@@ -4,13 +4,13 @@ from fastf1.ergast import Ergast
 import pandas as pd
 from database import safe_fetch_one
 
-YEAR = 2025
-
 real_time = datetime.now(timezone.utc)
-TARGET = datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
-OFFSET = real_time - TARGET
+TARGET = None #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+if TARGET:
+    OFFSET = real_time - TARGET
 TEST_TIME = None
-TIME_MULTIPLE = 600.0
+TIME_MULTIPLE = 1.0
+SEASON = 2026
 
 def get_now():
     if TEST_TIME:
@@ -26,7 +26,7 @@ def get_now():
 
 def refresh_race_cache(now=None, year=None):
     if year is None:
-        year = YEAR
+        year = SEASON
 
     if now is None:
         now = datetime.now(timezone.utc)
@@ -97,7 +97,7 @@ def refresh_race_cache(now=None, year=None):
 
 def race_results(year=None):
     if year is None:
-        year = YEAR
+        year = SEASON
 
     schedule = fastf1.get_event_schedule(year)
 
@@ -162,7 +162,7 @@ def race_results(year=None):
 
 def sprint_results(year=None):
     if year is None:
-        year = YEAR
+        year = SEASON
 
     schedule = fastf1.get_event_schedule(year)
     # Get timing of the next Quali session
@@ -216,7 +216,7 @@ def sprint_results(year=None):
  
 def get_final_champions_if_ready(year=None):
     if year is None:
-        year = YEAR
+        year = SEASON
 
     now = get_now()
 
@@ -250,7 +250,7 @@ def get_final_champions_if_ready(year=None):
 
 def get_race_end_time(now):
     """Get the end time of the next unscored race."""
-    schedule = fastf1.get_event_schedule(YEAR)
+    schedule = fastf1.get_event_schedule(SEASON)
     
     schedule["Session5DateUtc"] = pd.to_datetime(
         schedule["Session5DateUtc"],
@@ -294,7 +294,7 @@ def get_race_end_time(now):
 
 def get_season_end_time(year=None):
     if year is None:
-        year = YEAR
+        year = SEASON
 
     calendar = fastf1.get_event_schedule(year)
     last_race = calendar.iloc[-1]

@@ -1,5 +1,4 @@
 from database import safe_execute,safe_fetch_all, get_connection, safe_fetch_one
-import psycopg2
 import threading
 
 db_lock = threading.Lock()

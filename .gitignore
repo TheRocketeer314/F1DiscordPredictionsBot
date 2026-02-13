@@ -1,4 +1,31 @@
+# Python virtual environment
 venv/
+
+# Environment variables
 .env
+
+# Byte-compiled / cache
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+discord.log
+
+# FastF1 cache
 fastf1cache/
+
+# Local database files
+*.db
+
+# VS Code workspace settings
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+#temporary
+temporary.txt
