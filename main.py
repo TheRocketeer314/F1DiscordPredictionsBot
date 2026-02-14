@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 import os
 from dotenv import load_dotenv
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 import asyncio
 import fastf1
 from FastF1_service import refresh_race_cache, race_results, sprint_results
@@ -26,10 +26,13 @@ from database import (init_db, save_race_predictions,
                       prediction_state_log,
                       fetch_bold_predictions,
                       get_crazy_predictions,
-                      count_crazy_predictions)
+                      count_crazy_predictions,
+                      set_prediction_channel,
+                      get_prediction_channel)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
+from get_now import get_now, TIME_MULTIPLE
 
 # Load environment variables
 load_dotenv()
@@ -41,27 +44,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-real_time = datetime.now(timezone.utc)
-TARGET = None #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
-if TARGET:
-    OFFSET = real_time - TARGET
-TEST_TIME = None
-TIME_MULTIPLE = 1.0
-SEASON = 2026
-
 fastf1.Cache.enable_cache("fastf1cache")
-
-def get_now():
-    if TEST_TIME:
-        return TEST_TIME 
-    if TARGET:
-        real_elapsed = datetime.now(timezone.utc) - real_time
-        accelerated_elapsed = real_elapsed.total_seconds() * TIME_MULTIPLE
-        return TARGET + timedelta(seconds=accelerated_elapsed)
-        #return datetime.now(timezone.utc) - OFFSET
-    return datetime.now(timezone.utc)
-
-GUILD_ID = 1466452726647885867
 
 #Globals
 RACE_CACHE: dict = {}
@@ -163,7 +146,6 @@ from datetime import datetime, timezone, timedelta
 @bot.event
 async def on_ready():
     init_db()
-    guild = discord.Object(id=GUILD_ID)
     await bot.tree.sync()
     initial = refresh_race_cache(get_now())
     if initial:
@@ -885,8 +867,6 @@ async def update_leaderboard_cmd(interaction: discord.Interaction):
 
 @tasks.loop(minutes=60/TIME_MULTIPLE)
 async def bold_predictions_publisher():
-    #print("Bold loop tick")
-
     try:
         race_number = RACE_CACHE.get("race_number")
         race_name = RACE_CACHE.get("race_name")
@@ -924,9 +904,23 @@ async def bold_predictions_publisher():
 
         content = "\n".join(lines)
 
-        channel = await bot.fetch_channel(1466452728015224917)
+        # --- CHANNEL HANDLING VIA DB ---
+        # If you only have one server, get it from bot.guilds[0] (or adjust for multiple)
+        guild = bot.guilds[0]  # or iterate over bot.guilds for multiple servers
 
-        # 🔑 THIS is the important part
+        # 1️⃣ fetch channel ID from DB
+        channel_id = get_prediction_channel(guild.id)
+        if not channel_id:
+            print(f"No prediction channel set for guild {guild.id}")
+            return
+
+        # 2️⃣ get live channel object
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            print(f"Configured channel {channel_id} no longer exists in guild {guild.id}")
+            return
+
+        # 🔑 send or edit message
         if not hasattr(bold_predictions_publisher, "message"):
             msg = await channel.send(content)
             await msg.pin()
@@ -936,5 +930,44 @@ async def bold_predictions_publisher():
 
     except Exception as e:
         print("BOLD LOOP ERROR:", e)
+
+@bot.tree.command(name="set_channel", description="Set or update the prediction channel")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_channel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+    # Ensure command is in a guild
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "This command can only be used in a server.",
+            ephemeral=True
+        )
+        return
+
+    # Ensure the channel belongs to the guild
+    if channel.guild.id != interaction.guild.id:
+        await interaction.response.send_message(
+            "You can only set a channel from this server.",
+            ephemeral=True
+        )
+        return
+
+    # Update the channel in the database
+    set_prediction_channel(interaction.guild.id, channel.id)
+
+    # Feedback
+    await interaction.response.send_message(
+        f"Prediction channel set to {channel.mention}",
+        ephemeral=True
+    )
+
+@set_channel.error
+async def set_channel_error(interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "You must be an administrator to use this command.",
+            ephemeral=True
+        )
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

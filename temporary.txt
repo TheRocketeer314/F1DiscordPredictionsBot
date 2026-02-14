@@ -359,3 +359,68 @@ async def predict(interaction: discord.Interaction):
             ephemeral=True)
     except Exception as e:
         print(e)
+_____________________________________________________________________________________
+@tasks.loop(minutes=60/TIME_MULTIPLE)
+async def bold_predictions_publisher():
+    #print("Bold loop tick")
+
+    try:
+        race_number = RACE_CACHE.get("race_number")
+        race_name = RACE_CACHE.get("race_name")
+        lock_time = RACE_CACHE.get("lock_time")
+
+        if not race_number or not lock_time:
+            return
+
+        now = get_now()
+        publish_time = lock_time - timedelta(days=2)
+
+        print(f"NOW: {now}")
+        print(f"LOCK TIME: {lock_time}")   
+
+        if now < publish_time or now > lock_time:
+            return
+
+        # fetch predictions
+        preds = fetch_bold_predictions(race_number)
+        print("PRED COUNT:", len(preds))
+
+        # render message
+        lines = [
+            f"**Bold Predictions — {race_name}**",
+            "",
+            f"Submissions lock in <t:{int(lock_time.timestamp())}:R>",
+            ""
+        ]
+
+        if preds:
+            for username, prediction in preds:
+                lines.append(f"• **{username}** — {prediction}")
+        else:
+            lines.append(f"No predictions for the {race_name} yet.")
+
+        content = "\n".join(lines)
+
+        # 1️⃣ fetch channel ID from DB
+        channel_id = get_prediction_channel(guild.id)
+        if not channel_id:
+            # optional: log or notify
+            print(f"No prediction channel set for guild {guild.id}")
+            return
+
+        # 2️⃣ get live channel object
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            print(f"Configured channel {channel_id} no longer exists in guild {guild.id}")
+            return
+    
+        # 🔑 THIS is the important part
+        if not hasattr(bold_predictions_publisher, "message"):
+            msg = await channel.send(content)
+            await msg.pin()
+            bold_predictions_publisher.message = msg
+        else:
+            await bold_predictions_publisher.message.edit(content=content)
+
+    except Exception as e:
+        print("BOLD LOOP ERROR:", e)

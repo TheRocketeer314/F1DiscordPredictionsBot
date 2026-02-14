@@ -195,6 +195,11 @@ def init_db():
     message_id BIGINT NOT NULL
     )""")
 
+    cur.execute("""CREATE TABLE IF NOT EXISTS guild_config (
+    guild_id BIGINT PRIMARY KEY,
+    prediction_channel_id BIGINT NOT NULL
+);
+""")
     conn.commit()
     cur.close()
     conn.close()
@@ -547,3 +552,24 @@ def save_persistent_message(key, channel_id, message_id):
             """,
             (key, channel_id, message_id)
         )
+
+def set_prediction_channel(guild_id: int, channel_id: int):
+    query = """
+        INSERT INTO guild_config (guild_id, prediction_channel_id)
+        VALUES (%s, %s)
+        ON CONFLICT (guild_id)
+        DO UPDATE SET prediction_channel_id = EXCLUDED.prediction_channel_id;
+    """
+    safe_execute(query, guild_id, channel_id)
+
+
+def get_prediction_channel(guild_id: int):
+    query = """
+        SELECT prediction_channel_id
+        FROM guild_config
+        WHERE guild_id = %s;
+    """
+    row = safe_fetch_one(query, guild_id)
+    if row:
+        return row["prediction_channel_id"]
+    return None

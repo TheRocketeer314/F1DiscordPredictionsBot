@@ -29,3 +29,9 @@ Thumbs.db
 
 #temporary
 temporary.txt
+
+# VS Code temp file
+tempCodeRunnerFile.py
+
+# VS Code workspace
+*.code-workspace

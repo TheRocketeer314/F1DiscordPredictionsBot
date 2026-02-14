@@ -3,26 +3,7 @@ import fastf1
 from fastf1.ergast import Ergast
 import pandas as pd
 from database import safe_fetch_one
-
-real_time = datetime.now(timezone.utc)
-TARGET = None #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
-if TARGET:
-    OFFSET = real_time - TARGET
-TEST_TIME = None
-TIME_MULTIPLE = 1.0
-SEASON = 2026
-
-def get_now():
-    if TEST_TIME:
-        return TEST_TIME 
-    if TARGET:
-        if TIME_MULTIPLE:
-            real_elapsed = datetime.now(timezone.utc) - real_time
-            accelerated_elapsed = real_elapsed.total_seconds() * TIME_MULTIPLE
-            return TARGET + timedelta(seconds=accelerated_elapsed)
-        return datetime.now(timezone.utc) - OFFSET
-    return datetime.now(timezone.utc)
-
+from get_now import get_now, SEASON
 
 def refresh_race_cache(now=None, year=None):
     if year is None:
