@@ -560,16 +560,17 @@ def set_prediction_channel(guild_id: int, channel_id: int):
         ON CONFLICT (guild_id)
         DO UPDATE SET prediction_channel_id = EXCLUDED.prediction_channel_id;
     """
-    safe_execute(query, guild_id, channel_id)
+    safe_execute(query, (guild_id, channel_id))
 
 
 def get_prediction_channel(guild_id: int):
-    query = """
-        SELECT prediction_channel_id
-        FROM guild_config
-        WHERE guild_id = %s;
-    """
-    row = safe_fetch_one(query, guild_id)
-    if row:
-        return row["prediction_channel_id"]
-    return None
+    """Returns an int channel ID or None"""
+    row = safe_fetch_one(
+        "SELECT prediction_channel_id FROM guild_config WHERE guild_id = %s",
+        (guild_id,)
+    )
+    if row is None:
+        return None
+
+    # safe-fetch returns a dict
+    return row.get("prediction_channel_id")

@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta
 import asyncio
 import fastf1
+from pathlib import Path
 from FastF1_service import refresh_race_cache, race_results, sprint_results
 from database import (init_db, save_race_predictions,
                       save_constructor_prediction,
@@ -44,7 +45,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-fastf1.Cache.enable_cache("fastf1cache")
+# auto-create cache folder if it doesn't exist
+cache_dir = Path("fastf1cache")
+cache_dir.mkdir(exist_ok=True)
+
+fastf1.Cache.enable_cache(str(cache_dir))
 
 #Globals
 RACE_CACHE: dict = {}
@@ -872,15 +877,14 @@ async def bold_predictions_publisher():
         race_name = RACE_CACHE.get("race_name")
         lock_time = RACE_CACHE.get("lock_time")
 
+        now = get_now()
+        print(f"NOW: {now}")
+        print(f"LOCK TIME: {lock_time}")
+
         if not race_number or not lock_time:
             return
 
-        now = get_now()
         publish_time = lock_time - timedelta(days=2)
-
-        print(f"NOW: {now}")
-        print(f"LOCK TIME: {lock_time}")   
-
         if now < publish_time or now > lock_time:
             return
 
@@ -895,7 +899,6 @@ async def bold_predictions_publisher():
             f"Submissions lock in <t:{int(lock_time.timestamp())}:R>",
             ""
         ]
-
         if preds:
             for username, prediction in preds:
                 lines.append(f"• **{username}** — {prediction}")
@@ -904,63 +907,97 @@ async def bold_predictions_publisher():
 
         content = "\n".join(lines)
 
-        # --- CHANNEL HANDLING VIA DB ---
-        # If you only have one server, get it from bot.guilds[0] (or adjust for multiple)
-        guild = bot.guilds[0]  # or iterate over bot.guilds for multiple servers
+        # --- INIT DICTS ---
+        if not hasattr(bold_predictions_publisher, "warn_messages"):
+            bold_predictions_publisher.warn_messages = {}
+        if not hasattr(bold_predictions_publisher, "messages"):
+            bold_predictions_publisher.messages = {}
 
-        # 1️⃣ fetch channel ID from DB
-        channel_id = get_prediction_channel(guild.id)
-        if not channel_id:
-            print(f"No prediction channel set for guild {guild.id}")
-            return
+        for guild in bot.guilds:
+            channel_id = get_prediction_channel(guild.id)
 
-        # 2️⃣ get live channel object
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            print(f"Configured channel {channel_id} no longer exists in guild {guild.id}")
-            return
+            if not channel_id:
+                # Only send warning once per guild
+                if guild.id not in bold_predictions_publisher.warn_messages:
+                    channel = guild.text_channels[0] if guild.text_channels else None
+                    if channel:
+                        msg = await channel.send(
+                            "Prediction channel not set! Admins, use /set_channel to configure it."
+                        )
+                        await msg.pin()
+                        bold_predictions_publisher.warn_messages[guild.id] = msg
+                        print(f"Sent warning in guild {guild.name}")
+                continue  # skip sending predictions
 
-        # 🔑 send or edit message
-        if not hasattr(bold_predictions_publisher, "message"):
-            msg = await channel.send(content)
-            await msg.pin()
-            bold_predictions_publisher.message = msg
-        else:
-            await bold_predictions_publisher.message.edit(content=content)
+            # normal predictions
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                print(f"Channel {channel_id} not found in guild {guild.name}")
+                continue
+
+            if guild.id not in bold_predictions_publisher.messages:
+                msg = await channel.send(content)
+                await msg.pin()
+                bold_predictions_publisher.messages[guild.id] = msg
+                print(f"Sent new prediction message in {guild.name}")
+            else:
+                await bold_predictions_publisher.messages[guild.id].edit(content=content)
+                print(f"Edited existing prediction message in {guild.name}")
 
     except Exception as e:
         print("BOLD LOOP ERROR:", e)
 
 @bot.tree.command(name="set_channel", description="Set or update the prediction channel")
 @app_commands.checks.has_permissions(administrator=True)
-async def set_channel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel
-):
-    # Ensure command is in a guild
-    if interaction.guild is None:
-        await interaction.response.send_message(
-            "This command can only be used in a server.",
-            ephemeral=True
-        )
-        return
+async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    try:
+        # Attempt to defer — this gives you more time
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
 
-    # Ensure the channel belongs to the guild
-    if channel.guild.id != interaction.guild.id:
-        await interaction.response.send_message(
-            "You can only set a channel from this server.",
-            ephemeral=True
-        )
-        return
+        # basic checks
+        if interaction.guild is None:
+            await interaction.followup.send("This command can only be used in a server.")
+            return
 
-    # Update the channel in the database
-    set_prediction_channel(interaction.guild.id, channel.id)
+        if channel.guild.id != interaction.guild.id:
+            await interaction.followup.send("You can only set a channel from this server.")
+            return
 
-    # Feedback
-    await interaction.response.send_message(
-        f"Prediction channel set to {channel.mention}",
-        ephemeral=True
-    )
+        old_channel_id = get_prediction_channel(interaction.guild.id)
+        old_channel = interaction.guild.get_channel(old_channel_id) if old_channel_id else None
+
+        # update DB
+        set_prediction_channel(interaction.guild.id, channel.id)
+
+        # send followup
+        if old_channel:
+            await interaction.followup.send(
+                f"Prediction channel updated from {old_channel.mention} to {channel.mention}"
+            )
+        else:
+            await interaction.followup.send(
+                f"Prediction channel set to {channel.mention}"
+            )
+
+    except app_commands.MissingPermissions:
+        # fallback response in case user lacks admin perms
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "You must be an administrator to use this command.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send("You must be an administrator to use this command.")
+    except Exception as e:
+        # generic error handling
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"Error: {e}")
+        except:
+            # if even that fails, just log it
+            print(f"Failed to send error message: {e}")
 
 @set_channel.error
 async def set_channel_error(interaction, error):
