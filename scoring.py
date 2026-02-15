@@ -1,4 +1,4 @@
-from database import safe_execute,safe_fetch_all, get_connection, safe_fetch_one
+from database import safe_execute, safe_fetch_all, get_connection, safe_fetch_one
 import threading
 
 db_lock = threading.Lock()
@@ -100,18 +100,20 @@ def score_race(race_number):
 
         safe_execute("""
             INSERT INTO race_scores (
+                guild_id,
                 user_id,
                 username,
                 race_number,
                 race_name,
                 points
             )
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT(user_id, race_number)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(guild_id, user_id, race_number)
             DO UPDATE SET
                 username = excluded.username,
                 points = excluded.points
         """, (
+            pred['guild_id'],
             pred['user_id'],
             pred['username'],
             race_number,
@@ -122,7 +124,38 @@ def score_race(race_number):
     
     print(f"=== Finished score_race for race {race_number} ===")
 
-# scoring.py
+def score_race_for_guild(race_number, guild_id):
+    predictions = safe_fetch_all(
+        "SELECT * FROM race_predictions WHERE race_number=%s AND guild_id=%s",
+        (race_number, guild_id)
+    )
+    if not predictions:
+        return
+
+    result = safe_fetch_one(
+        "SELECT * FROM race_results WHERE race_number=%s",
+        (race_number,)
+    )
+    if not result:
+        return
+
+    race_name = result['race_name']
+
+    for pred in predictions:
+        points = score_weekend(pred, result)
+        safe_execute(
+            """
+            INSERT INTO race_scores (
+                guild_id, user_id, username, race_number, race_name, points
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
+                username = excluded.username,
+                points = excluded.points
+            """,
+            (guild_id, pred['user_id'], pred['username'], race_number, race_name, points)
+        )
+
 
 def score_final_champions():
     """
@@ -147,12 +180,12 @@ def score_final_champions():
             print(f"Final champions: WDC={real_wdc}, WCC={real_wcc}")
 
             # Fetch all user predictions
-            cur.execute("SELECT user_id, username, wdc, LOWER(wcc) FROM season_predictions")
+            cur.execute("SELECT guild_id, user_id, username, wdc, LOWER(wcc) FROM season_predictions")
             user_preds = cur.fetchall()
             print(f"Found {len(user_preds)} season predictions to score")
 
             # Loop over users and calculate score
-            for user_id, username, user_wdc, user_wcc in user_preds:
+            for guild_id, user_id, username, user_wdc, user_wcc in user_preds:
                 score = 0
                 if user_wdc == real_wdc:
                     score += 20  # points for WDC
@@ -163,11 +196,11 @@ def score_final_champions():
 
                 # Insert or update
                 cur.execute("""
-                    INSERT INTO final_scores (user_id, username, points)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT(user_id) DO UPDATE SET
+                    INSERT INTO final_scores (guild_id, user_id, username, points)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
                         points = excluded.points
-                """, (user_id, username, score))
+                """, (guild_id, user_id, username, score))
                 
                 print(f"Scored user {username}: {score} points")
 

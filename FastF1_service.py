@@ -259,7 +259,7 @@ def get_race_end_time(now):
         # Check if this race has been scored
         existing_scores = safe_fetch_one(
             "SELECT 1 FROM race_scores WHERE race_number = %s LIMIT 1",
-            (race_number,)
+            (race_number)
         )
         
         if not existing_scores:

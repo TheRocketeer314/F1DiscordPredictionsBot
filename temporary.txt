@@ -424,3 +424,132 @@ async def bold_predictions_publisher():
 
     except Exception as e:
         print("BOLD LOOP ERROR:", e)
+_____________________________________________________________________________________
+def update_leaderboard():
+    with db_lock:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            
+            # First, let's see what we're combining
+            cur.execute("""
+                SELECT user_id, username, points, 'race_scores' as source FROM race_scores
+                UNION ALL
+                SELECT user_id, username, points, 'final_scores' as source FROM final_scores
+                UNION ALL
+                SELECT userid AS user_id, username, points, 'total_force_points' as source FROM total_force_points
+                ORDER BY user_id, source;
+            """)
+            
+            all_data = cur.fetchall()
+            #print("\n=== All data before grouping ===")
+            #for row in all_data:
+                #print(f"user_id: {row[0]}, username: {row[1]}, points: {row[2]}, source: {row[3]}")
+            
+            # Now do the actual update
+            cur.execute("DELETE FROM leaderboard;")
+            cur.execute("""
+                WITH combined AS (
+                    SELECT user_id, username, points FROM race_scores
+                    UNION ALL
+                    SELECT user_id, username, points FROM final_scores
+                    UNION ALL
+                    SELECT userid AS user_id, username, points FROM total_force_points
+                )
+                INSERT INTO leaderboard (user_id, username, total_points)
+                SELECT
+                    user_id,
+                    MAX(username) AS username,
+                    SUM(points) AS total_points
+                FROM combined
+                GROUP BY user_id
+                ORDER BY total_points DESC;
+            """)
+            
+            # Check what got inserted
+            cur.execute("SELECT user_id, username, total_points FROM leaderboard ORDER BY total_points DESC;")
+            results = cur.fetchall()
+            #print("\n=== Leaderboard after update ===")
+            for row in results:
+                print(f"user_id: {row[0]}, username: {row[1]}, total_points: {row[2]}")
+            
+            conn.commit()
+            cur.close()
+        except Exception as e:
+            conn.rollback()
+            print("Error updating leaderboard:", e)
+            import traceback
+            traceback.print_exc()
+        finally:
+            conn.close() 
+_____________________________________________________________________________________
+async def poll_results_loop(bot):
+    await bot.wait_until_ready()
+    loop = asyncio.get_running_loop()
+
+    while not bot.is_closed():
+        try:
+            race_end_time = get_race_end_time(get_now())
+
+            if race_end_time is None:
+                print("No upcoming races found, season may be over. Waiting 24 hours...")
+                await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
+                continue
+
+            delay = (race_end_time - get_now()).total_seconds()
+            
+            # Wait until race ends, checking periodically
+            while delay > 0:
+                print(f"Waiting {delay/3600/TIME_MULTIPLE:.2f} hours until next race ends...")
+                await asyncio.sleep(min(delay / TIME_MULTIPLE, 600 / TIME_MULTIPLE))
+                # Recalculate in case something changed
+                race_end_time = get_race_end_time(get_now())
+                delay = (race_end_time - get_now()).total_seconds()
+                continue 
+            
+            # If race_end_time became None, restart from top
+            if race_end_time is None:
+                continue
+            
+            # If we get here, delay <= 0, meaning race has ended
+            print("Race has ended, fetching results...")
+            race_data = await loop.run_in_executor(None, race_results)
+
+            if race_data:
+                race_num = race_data['race_number']
+                
+                # Check if already scored
+                existing_scores = safe_fetch_one(
+                    "SELECT 1 FROM race_scores WHERE race_number = %s LIMIT 1",
+                    (race_num,)
+                )
+                
+                if existing_scores:
+                    print(f"Race {race_num} already scored.")
+                    await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
+                    continue
+                
+                print(f"Processing race {race_num}...")
+                save_race_results(race_data)
+                
+                sprint_data = await loop.run_in_executor(None, sprint_results)
+                if sprint_data:
+                    save_sprint_results(sprint_data)
+                
+                print(f"Scoring race {race_num}...")
+                score_race(race_num)
+                print(f"Race {race_num} scored successfully!")
+                
+                for guild in bot.guilds:
+                    update_leaderboard(guild.id)
+                print(f"Leaderboard updated successfully!")
+
+                 # CRITICAL: Sleep before checking for next race
+                print("Sleeping 24 hours before checking for next race...")
+                await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
+            
+        except Exception as e:
+            print(f"Error in poll_results_loop: {e}")
+            import traceback
+            traceback.print_exc()
+            await asyncio.sleep(60 * 60 / TIME_MULTIPLE)

@@ -29,7 +29,9 @@ from database import (init_db, save_race_predictions,
                       get_crazy_predictions,
                       count_crazy_predictions,
                       set_prediction_channel,
-                      get_prediction_channel)
+                      get_prediction_channel,
+                      guild_default_lock,
+                      ensure_lock_rows)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
@@ -88,7 +90,9 @@ async def race_cache_watcher():
                 RACE_CACHE.clear()
                 RACE_CACHE.update(new_cache)
 
-            reset_locks_on_cache_refresh()
+            for guild in bot.guilds:
+                reset_locks_on_cache_refresh(guild.id)
+
             await asyncio.sleep(60/TIME_MULTIPLE)
             continue
 
@@ -103,12 +107,14 @@ async def race_cache_watcher():
             RACE_CACHE.clear()
             RACE_CACHE.update(new_cache)
 
-        reset_locks_on_cache_refresh()
+        for guild in bot.guilds:
+            reset_locks_on_cache_refresh(guild.id)
+
 
 # Function to check if predictions are open
-def predictions_open(now: datetime, RACE_CACHE) -> bool:
+def predictions_open(guild_id, now: datetime, RACE_CACHE) -> bool:
     lock_time = RACE_CACHE.get("lock_time")
-    manual = get_manual_lock("race")
+    manual = get_manual_lock(guild_id, "race")
 
     if manual == "LOCKED":
         return False
@@ -127,9 +133,9 @@ def predictions_open(now: datetime, RACE_CACHE) -> bool:
 # race_number -> { user_id -> [predictions] }
 user_predictions = {}
 
-def sprint_predictions_open(now: datetime, RACE_CACHE) -> bool:
+def sprint_predictions_open(guild_id, now: datetime, RACE_CACHE) -> bool:
     sprint_lock_time = RACE_CACHE.get("sprint_lock_time")
-    sprint_manual = get_manual_lock("sprint")
+    sprint_manual = get_manual_lock(guild_id, "sprint")
 
     if sprint_manual == "LOCKED":
         return False
@@ -144,9 +150,6 @@ def sprint_predictions_open(now: datetime, RACE_CACHE) -> bool:
         return False
     
     return sprint_lock_time is not None and now < sprint_lock_time
-
-from discord.ext import tasks
-from datetime import datetime, timezone, timedelta
 
 @bot.event
 async def on_ready():
@@ -199,6 +202,17 @@ async def on_app_command_error(
             ephemeral=True
         )
 
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    guild_id = guild.id
+    print(f"Joined new guild: {guild.name} ({guild_id})")
+
+    # Set up default season state
+    guild_default_lock(guild_id)
+
+    # Add default prediction locks for this guild
+    ensure_lock_rows(guild_id)
+
 user_predictions = {}
 
 prediction_locked = {}
@@ -242,6 +256,7 @@ class PredictionSelect(discord.ui.Select):
         now = get_now()
 
         if not predictions_open(
+            interaction.guild.id,
             now,
             RACE_CACHE
            ):
@@ -274,6 +289,7 @@ class PredictionSelect(discord.ui.Select):
             # store the new selection
             user_predictions[user_id][self.index] = selected_driver
             save_race_predictions(
+                interaction.guild.id,
                 interaction.user.id,
                 interaction.user.name,
                 int(RACE_CACHE.get("race_number")),
@@ -303,6 +319,7 @@ class PredictionSelect(discord.ui.Select):
         # Fastest Lap and Pole can repeat drivers
         user_predictions[user_id][self.index] = selected_driver
         save_race_predictions(
+                interaction.guild.id,
                 interaction.user.id,
                 interaction.user.name,
                 int(RACE_CACHE.get("race_number")),
@@ -313,21 +330,25 @@ class PredictionSelect(discord.ui.Select):
         #await interaction.response.defer(ephemeral=True)
 
 class PredictionView(discord.ui.View):
-    def __init__(self, user_id=None):
+    def __init__(self, guild_id, user_id=None):
         super().__init__(timeout=300)
+        self.guild_id = guild_id
+
+        # Add the selects
         for i in range(5):
             current = None
             if user_id and user_id in user_predictions:
                 current = user_predictions[user_id][i]
             self.add_item(PredictionSelect(i, current_selection=current))
 
+        # Disable everything if predictions are closed
         now = get_now()
-        if not predictions_open(now, RACE_CACHE):
+        if not predictions_open(self.guild_id, now, RACE_CACHE):
             self.disable_all()
 
     def disable_all(self):
         for child in self.children:
-            child.disable = True
+            child.disabled = True
 
 @bot.tree.command(name="race_predict", description="Make your race predictions")
 async def predict(interaction: discord.Interaction):
@@ -335,7 +356,7 @@ async def predict(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(
             f"Make your predictions for the {RACE_CACHE.get("race_name")}:",
-            view=PredictionView(interaction.user.id),
+            view=PredictionView(interaction.guild.id, interaction.user.id),
             ephemeral=True)
     except Exception as e:
         print(e)
@@ -394,6 +415,7 @@ class SprintSubmitButton(discord.ui.Button):
         now = get_now()
 
         if not sprint_predictions_open(
+            interaction.guild.id,
             now,
             RACE_CACHE
            ):
@@ -416,6 +438,7 @@ class SprintSubmitButton(discord.ui.Button):
         }
 
         save_sprint_predictions(
+            interaction.guild.id,
             interaction.user.id,
             interaction.user.name,
             int(RACE_CACHE.get("race_number")),
@@ -460,7 +483,7 @@ async def force_points(
     await interaction.followup.send(f"Awarded {user.mention} {points} points", 
                                     ephemeral=True)
     
-    add_points(user.id, str(user), points, reason)
+    add_points(interaction.guild.id, user.id, str(user), points, reason)
     
     if reason:
         message = f"**{user.mention} received {points} points** for *{reason}*."
@@ -497,7 +520,7 @@ async def constructor_prediction(interaction: discord.Interaction, constructor: 
     now = get_now()
 
     # Use your existing function to check if predictions are open
-    if not predictions_open(now, RACE_CACHE):
+    if not predictions_open(interaction.guild.id, now, RACE_CACHE):
         try:
             await interaction.followup.send(
             "⛔ Predictions are closed.",
@@ -510,6 +533,7 @@ async def constructor_prediction(interaction: discord.Interaction, constructor: 
 
     # Save prediction (overwrite if user already submitted)
     save_constructor_prediction(
+        interaction.guild.id,
         interaction.user.id,
         interaction.user.name,
         int(RACE_CACHE.get("race_number")),
@@ -549,10 +573,10 @@ async def pred_lock(
 ):
     await interaction.response.defer(ephemeral=False)
     if state.value == "AUTO":
-        set_manual_lock(prediction.value, None)
+        set_manual_lock(interaction.guild.id, prediction.value, None)
         msg = f"⚙️ **{prediction.name} predictions set to AUTO mode.**"
     else:
-        set_manual_lock(prediction.value, state.value)
+        set_manual_lock(interaction.guild.id, prediction.value, state.value)
         emoji = "🔒" if state.value == "LOCKED" else "🔓"
         msg = f"{emoji} **{prediction.name} predictions manually {state.name.upper()}.**"
 
@@ -560,6 +584,7 @@ async def pred_lock(
     await interaction.followup.send("Done.", ephemeral=True)
 
     prediction_state_log(
+        interaction.guild.id,
         str(interaction.user.id),
         str(interaction.user),
         "pred_lock",
@@ -616,7 +641,7 @@ class SeasonSubmitButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            if not is_season_open():
+            if not is_season_open(interaction.guild.id):
                 await interaction.followup.send(
                     "Season predictions are locked.",
                     ephemeral=True
@@ -631,6 +656,7 @@ class SeasonSubmitButton(discord.ui.Button):
                 return
 
             save_season_prediction(
+                interaction.guild.id,
                 interaction.user.id,
                 interaction.user.name,
                 wdc=self.view2.wdc,
@@ -664,11 +690,12 @@ async def season(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_lock(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    set_season_state(False)
+    set_season_state(interaction.guild.id, False)
     await interaction.channel.send("🔒 **Season predictions are now LOCKED.**")
     await interaction.followup.send("Done.", ephemeral=True)
 
     prediction_state_log(
+        interaction.guild.id,
         str(interaction.user.id),
         str(interaction.user),
         "season_lock",
@@ -682,11 +709,12 @@ async def season_lock(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_unlock(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    set_season_state(True)
+    set_season_state(interaction.guild.id, True)
     await interaction.channel.send("🔓 **Season predictions are now OPEN.**")
     await interaction.followup.send("Done.", ephemeral=True)
 
     prediction_state_log(
+        interaction.guild.id,
         str(interaction.user.id),
         str(interaction.user),
         "season_unlock",
@@ -698,11 +726,11 @@ async def season_unlock(interaction: discord.Interaction):
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     # Top 10
-    top10 = get_top_n(10)
+    top10 = get_top_n(interaction.guild.id, 10)
     top10_text = "\n".join([f"{i+1}. {user} - {pts} pts" for i, (user, pts) in enumerate(top10)])
 
     # User rank
-    user_rank = get_user_rank(interaction.user.name)
+    user_rank = get_user_rank(interaction.guild.id, interaction.user.name)
     if user_rank:
         rank, total_points = user_rank
         # Highlight user if outside top 10
@@ -758,7 +786,7 @@ async def crazy_predict(interaction: discord.Interaction, prediction: str):
 
     user = interaction.user
 
-    current_count = count_crazy_predictions(user.id, season)
+    current_count = count_crazy_predictions(interaction.guild.id, user.id, season)
 
     if current_count >= MAX_PREDICTIONS:
         await interaction.followup.send(
@@ -767,6 +795,7 @@ async def crazy_predict(interaction: discord.Interaction, prediction: str):
         return
 
     save_crazy_prediction(
+        interaction.guild.id,
         user_id=user.id,
         username=str(user),
         season=season,
@@ -815,7 +844,7 @@ async def crazy_predictions(interaction: discord.Interaction, user: discord.User
     global SEASON
     season = SEASON
 
-    rows = get_crazy_predictions(user.id, season)
+    rows = get_crazy_predictions(interaction.guild.id, user.id, season)
     message = format_crazy_predictions(user.display_name, rows)
 
     await interaction.followup.send(message)
@@ -828,7 +857,7 @@ async def bold_predict(interaction: discord.Interaction, prediction: str):
     try:
         await interaction.response.defer(ephemeral=False)  # defer immediately
 
-        if not predictions_open(get_now(), RACE_CACHE):
+        if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
             await interaction.followup.send(
                 "❌ Bold predictions are locked for this race.",
                 ephemeral=True
@@ -839,6 +868,7 @@ async def bold_predict(interaction: discord.Interaction, prediction: str):
         timestamp = get_now().isoformat()
 
         save_bold_prediction(
+            interaction.guild.id,
             user_id=user.id,
             race_number=int(RACE_CACHE.get("race_number")),
             username=str(user),
@@ -863,7 +893,7 @@ async def update_leaderboard_cmd(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
 
     try:
-        update_leaderboard()
+        update_leaderboard(interaction.guild.id)
         await interaction.followup.send("✅ Leaderboard updated.")
     except Exception as e:
         await interaction.followup.send(
@@ -888,25 +918,6 @@ async def bold_predictions_publisher():
         if now < publish_time or now > lock_time:
             return
 
-        # fetch predictions
-        preds = fetch_bold_predictions(race_number)
-        print("PRED COUNT:", len(preds))
-
-        # render message
-        lines = [
-            f"**Bold Predictions — {race_name}**",
-            "",
-            f"Submissions lock in <t:{int(lock_time.timestamp())}:R>",
-            ""
-        ]
-        if preds:
-            for username, prediction in preds:
-                lines.append(f"• **{username}** — {prediction}")
-        else:
-            lines.append(f"No predictions for the {race_name} yet.")
-
-        content = "\n".join(lines)
-
         # --- INIT DICTS ---
         if not hasattr(bold_predictions_publisher, "warn_messages"):
             bold_predictions_publisher.warn_messages = {}
@@ -914,34 +925,52 @@ async def bold_predictions_publisher():
             bold_predictions_publisher.messages = {}
 
         for guild in bot.guilds:
-            channel_id = get_prediction_channel(guild.id)
+            guild_id = guild.id
+            preds = fetch_bold_predictions(guild_id, race_number)
+            print(f"{guild.name} ({guild_id}) PRED COUNT:", len(preds))
 
+            # render message
+            lines = [
+                f"**Bold Predictions — {race_name}**",
+                "",
+                f"Submissions lock in <t:{int(lock_time.timestamp())}:R>",
+                ""
+            ]
+            if preds:
+                for username, prediction in preds:
+                    lines.append(f"• **{username}** — {prediction}")
+            else:
+                lines.append(f"No predictions for the {race_name} yet.")
+
+            content = "\n".join(lines)
+
+            # get channel
+            channel_id = get_prediction_channel(guild_id)
             if not channel_id:
-                # Only send warning once per guild
-                if guild.id not in bold_predictions_publisher.warn_messages:
+                if guild_id not in bold_predictions_publisher.warn_messages:
                     channel = guild.text_channels[0] if guild.text_channels else None
                     if channel:
                         msg = await channel.send(
                             "Prediction channel not set! Admins, use /set_channel to configure it."
                         )
                         await msg.pin()
-                        bold_predictions_publisher.warn_messages[guild.id] = msg
+                        bold_predictions_publisher.warn_messages[guild_id] = msg
                         print(f"Sent warning in guild {guild.name}")
-                continue  # skip sending predictions
+                continue
 
-            # normal predictions
             channel = guild.get_channel(channel_id)
             if not channel:
                 print(f"Channel {channel_id} not found in guild {guild.name}")
                 continue
 
-            if guild.id not in bold_predictions_publisher.messages:
+            # send or edit message
+            if guild_id not in bold_predictions_publisher.messages:
                 msg = await channel.send(content)
                 await msg.pin()
-                bold_predictions_publisher.messages[guild.id] = msg
+                bold_predictions_publisher.messages[guild_id] = msg
                 print(f"Sent new prediction message in {guild.name}")
             else:
-                await bold_predictions_publisher.messages[guild.id].edit(content=content)
+                await bold_predictions_publisher.messages[guild_id].edit(content=content)
                 print(f"Edited existing prediction message in {guild.name}")
 
     except Exception as e:

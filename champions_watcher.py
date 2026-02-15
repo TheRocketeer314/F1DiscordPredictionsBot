@@ -29,7 +29,8 @@ async def final_champions_loop(bot):
             save_final_champions(wdc, wcc)
 
             score_final_champions()
-            update_leaderboard()
+            for guild in bot.guilds:
+                update_leaderboard(guild.id)
             return
 
         await asyncio.sleep(3600/TIME_MULTIPLE)  # rare delay fallback

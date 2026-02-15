@@ -34,6 +34,7 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS race_predictions(
+        guild_id BIGINT NOT NULL,
         user_id BIGINT NOT NULL,
         username TEXT NOT NULL,
         race_number INTEGER NOT NULL,
@@ -50,43 +51,36 @@ def init_db():
         sprint_winner TEXT,
         sprint_pole TEXT,
 
-        PRIMARY KEY (user_id, race_number)
+        PRIMARY KEY (guild_id, user_id, race_number)
         );
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS prediction_state (
-            id BIGINT PRIMARY KEY,
-            season_open BIGINT NOT NULL
+            guild_id BIGINT NOT NULL PRIMARY KEY,
+            season_open BIGINT NOT NULL DEFAULT 0
         );
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS season_predictions (
-            user_id BIGINT PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
             username TEXT NOT NULL,
             wdc TEXT,
-            wcc TEXT
+            wcc TEXT,
+                
+            PRIMARY KEY (guild_id, user_id)
         );
     """)
 
-    # ensure single row exists
-    cur.execute("""
-        INSERT INTO prediction_state (id, season_open)
-        VALUES (1, 0)
-        ON CONFLICT (id) DO NOTHING;
-    """)
-
     cur.execute("""CREATE TABLE IF NOT EXISTS prediction_locks (
-    type TEXT PRIMARY KEY,
-    manual_override TEXT
+    guild_id BIGINT NOT NULL,
+    type TEXT,
+    manual_override TEXT,
+                
+    PRIMARY KEY (guild_id, type)
     );
-""")
-
-    cur.execute("""INSERT INTO prediction_locks (type, manual_override) VALUES
-    ('race', NULL),
-    ('sprint', NULL)
-    ON CONFLICT (type) DO NOTHING;
 """)
     
     cur.execute("""CREATE TABLE IF NOT EXISTS race_results(
@@ -104,12 +98,13 @@ def init_db():
                 is_sprint BOOLEAN DEFAULT FALSE)""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS race_scores (
+    guild_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
     username TEXT NOT NULL,
     race_number INTEGER NOT NULL,
     race_name TEXT,
     points INTEGER,
-    PRIMARY KEY (user_id, race_number)
+    PRIMARY KEY (guild_id, user_id, race_number)
 );
 """)
     
@@ -122,15 +117,19 @@ def init_db():
     
     cur.execute("""
         CREATE TABLE IF NOT EXISTS final_scores (
-            user_id BIGINT PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT,
             username TEXT,
-            points INTEGER
+            points INTEGER,
+                
+            PRIMARY KEY (guild_id, user_id)
         );
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS force_points_log (
-        id SERIAL PRIMARY KEY ,
+        id SERIAL PRIMARY KEY,
+        guild_id BIGINT NOT NULL,
         userid BIGINT NOT NULL,
         username TEXT NOT NULL,
         points_given INTEGER NOT NULL,
@@ -141,22 +140,29 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS total_force_points (
-        userid BIGINT PRIMARY KEY,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT,
         username TEXT NOT NULL,
-        points INTEGER DEFAULT 0
+        points INTEGER DEFAULT 0,
+                
+        PRIMARY KEY (guild_id, user_id)
         );
     """)
 
     cur.execute("""CREATE TABLE IF NOT EXISTS leaderboard (
-        user_id BIGINT PRIMARY KEY,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT,
         username TEXT,
-        total_points INTEGER
+        total_points INTEGER,
+                
+        PRIMARY KEY (guild_id, user_id)
         );
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS crazy_predictions (
             id SERIAL PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
             username TEXT NOT NULL,
             season INT NOT NULL,
@@ -167,19 +173,21 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS bold_predictions (
+            guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
             race_number INTEGER NOT NULL,
             username TEXT NOT NULL,
             race_name TEXT NOT NULL,
             prediction TEXT NOT NULL,
             timestamp TIMESTAMP NOT NULL,
-            PRIMARY KEY (user_id, race_number)
+            PRIMARY KEY (guild_id, user_id, race_number)
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS prediction_lock_log (
         id SERIAL PRIMARY KEY,
+        guild_id BIGINT NOT NULL,
         user_id BIGINT NOT NULL,
         username TEXT NOT NULL,
         command TEXT NOT NULL,
@@ -190,9 +198,12 @@ def init_db():
 """)
     
     cur.execute("""CREATE TABLE IF NOT EXISTS persistent_messages (
-    key TEXT PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    key TEXT,
     channel_id BIGINT NOT NULL,
-    message_id BIGINT NOT NULL
+    message_id BIGINT NOT NULL,
+                
+    PRIMARY KEY (guild_id, key)
     )""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS guild_config (
@@ -235,15 +246,15 @@ def safe_fetch_one(query, params=()):
         conn.close()
         return result
 
-def save_race_predictions(user_id, username, race_number, race_name, preds):
+def save_race_predictions(guild_id, user_id, username, race_number, race_name, preds):
     safe_execute(
         """
         INSERT INTO race_predictions (
-            user_id, username, race_number, race_name,
+            guild_id, user_id, username, race_number, race_name,
             pos1, pos2, pos3, pole, fastest_lap
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT(user_id, race_number) DO UPDATE SET
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
             race_name = excluded.race_name,
             username = excluded.username,
             pos1 = excluded.pos1,
@@ -252,82 +263,103 @@ def save_race_predictions(user_id, username, race_number, race_name, preds):
             pole = excluded.pole,
             fastest_lap = excluded.fastest_lap
         """,
-        (user_id, username, race_number, race_name, *preds)
+        (guild_id, user_id, username, race_number, race_name, *preds)
     )
 
-def save_constructor_prediction(user_id, username, race_number, race_name, constructor):
+def save_constructor_prediction(guild_id, user_id, username, race_number, race_name, constructor):
     safe_execute(
         """
         INSERT INTO race_predictions (
-            user_id, username, race_number, race_name, constructor_winner
+            guild_id, user_id, username, race_number, race_name, constructor_winner
         )
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(user_id, race_number) DO UPDATE SET
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
             race_name = excluded.race_name,
             username = excluded.username,
             constructor_winner = excluded.constructor_winner
         """,
-        (user_id, username, race_number, race_name, constructor)
+        (guild_id, user_id, username, race_number, race_name, constructor)
     )
 
-def save_sprint_predictions(user_id, username, race_number, race_name, sprint_winner, sprint_pole):
+def save_sprint_predictions(guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole):
     safe_execute(
         """
         INSERT INTO race_predictions (
-            user_id, username, race_number, race_name,
+            guild_id, user_id, username, race_number, race_name,
             sprint_winner, sprint_pole
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT(user_id, race_number) DO UPDATE SET
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
             race_name = excluded.race_name,
             username = excluded.username,
             sprint_winner = excluded.sprint_winner,
             sprint_pole = excluded.sprint_pole
         """,
-        (user_id, username, race_number, race_name, sprint_winner, sprint_pole)
+        (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole)
     )
 
 # ---------- lock state ----------
-def set_season_state(open_: bool):
-    safe_execute(
-        "UPDATE prediction_state SET season_open = %s WHERE id = 1",
-        (int(open_),)
-    )
+def set_season_state(guild_id, open_: bool):
+    safe_execute("""
+        INSERT INTO prediction_state (guild_id, season_open)
+        VALUES (%s, %s)
+        ON CONFLICT (guild_id)
+        DO UPDATE SET season_open = EXCLUDED.season_open
+    """, (guild_id, int(open_)))
 
-def is_season_open() -> bool:
-    row = safe_fetch_one("SELECT season_open FROM prediction_state WHERE id = %s", (1,))
+def is_season_open(guild_id) -> bool:
+    row = safe_fetch_one(
+        "SELECT season_open FROM prediction_state WHERE guild_id = %s",
+        (guild_id,)
+    )
     return bool(row["season_open"]) if row else False
 
+
 # ---------- predictions ----------
-def save_season_prediction(user_id: int, username:str,*, wdc: str, wcc: str):
+def save_season_prediction(guild_id, user_id: int, username:str,*, wdc: str, wcc: str):
     safe_execute("""
-        INSERT INTO season_predictions (user_id,username, wdc, wcc)
-        VALUES (%s,%s, %s, %s)
-        ON CONFLICT(user_id)
+        INSERT INTO season_predictions (guild_id, user_id,username, wdc, wcc)
+        VALUES (%s, %s,%s, %s, %s)
+        ON CONFLICT(guild_id, user_id)
         DO UPDATE SET
             wdc = excluded.wdc,
             wcc = excluded.wcc
-    """, (user_id,username, wdc, wcc))
+    """, (guild_id, user_id,username, wdc, wcc))
 
-def set_manual_lock(pred_type: str, state: str | None):
+def guild_default_lock(guild_id: int):
+    safe_execute("""
+        INSERT INTO prediction_state (guild_id, season_open)
+        VALUES (%s, 0)
+        ON CONFLICT (guild_id) DO NOTHING;
+    """, (guild_id,))
+
+def ensure_lock_rows(guild_id: int):
+    safe_execute("""
+        INSERT INTO prediction_locks (guild_id, type, manual_override)
+        VALUES (%s, 'race', NULL),
+               (%s, 'sprint', NULL)
+        ON CONFLICT (guild_id, type) DO NOTHING;
+    """, (guild_id, guild_id))
+
+def set_manual_lock(guild_id, pred_type: str, state: str | None):
     safe_execute(
-        "UPDATE prediction_locks SET manual_override = %s WHERE type = %s",
-        (state, pred_type)
+        "UPDATE prediction_locks SET manual_override = %s WHERE guild_id = %s AND type = %s",
+        (state, guild_id, pred_type)
     )
 
-def get_manual_lock(pred_type: str) -> str | None:
+def get_manual_lock(guild_id, pred_type: str) -> str | None:
     row = safe_fetch_one(
-        "SELECT manual_override FROM prediction_locks WHERE type = %s",
-        (pred_type,)
+        "SELECT manual_override FROM prediction_locks WHERE guild_id = %s AND type = %s",
+        (guild_id, pred_type)
     )
     return row["manual_override"] if row else None
 
-def reset_locks_on_cache_refresh():
+def reset_locks_on_cache_refresh(guild_id):
     safe_execute("""
         UPDATE prediction_locks
         SET manual_override = NULL
-        WHERE type IN ('race', 'sprint')
-    """)
+        WHERE guild_id = %s AND type IN ('race', 'sprint')
+    """, (guild_id,))
 
 def save_race_results(data):
     # Check if race already exists
@@ -380,64 +412,96 @@ def save_final_champions(wdc, wcc):
         (wdc, wcc)
     )
 
-def add_points(user_id: str, username: str, points: int, reason: str):
+def add_points(guild_id, user_id: str, username: str, points: int, reason: str):
     safe_execute(
-        "INSERT INTO force_points_log (userid, username, points_given, reason) VALUES (%s, %s, %s, %s)",
-        (user_id, username, points, reason)
+        "INSERT INTO force_points_log (guild_id, userid, username, points_given, reason) VALUES (%s, %s, %s, %s, %s)",
+        (guild_id, user_id, username, points, reason)
     )
 
     # Update or insert total points
     safe_execute("""
-        INSERT INTO total_force_points (userid, username, points)
-        VALUES (%s, %s, %s)
-        ON CONFLICT(userid) DO UPDATE SET
+        INSERT INTO total_force_points (guild_id, user_id, username, points)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT(guild_id, user_id) DO UPDATE SET
             points = total_force_points.points + excluded.points,
             username = excluded.username
-    """, (user_id, username, points))
+    """, (guild_id, user_id, username, points))
 
-def update_leaderboard():
+def update_leaderboard(guild_id):
     with db_lock:
         conn = get_connection()
         try:
             cur = conn.cursor()
             
-            # First, let's see what we're combining
+            # First, let's see what we're combining (guild-specific)
             cur.execute("""
-                SELECT user_id, username, points, 'race_scores' as source FROM race_scores
+                SELECT user_id, username, points, 'race_scores' as source
+                FROM race_scores
+                WHERE guild_id = %s
+
                 UNION ALL
-                SELECT user_id, username, points, 'final_scores' as source FROM final_scores
+
+                SELECT user_id, username, points, 'final_scores' as source
+                FROM final_scores
+                WHERE guild_id = %s
+
                 UNION ALL
-                SELECT userid AS user_id, username, points, 'total_force_points' as source FROM total_force_points
+
+                SELECT user_id AS user_id, username, points, 'total_force_points' as source
+                FROM total_force_points
+                WHERE guild_id = %s
+
                 ORDER BY user_id, source;
-            """)
+            """, (guild_id, guild_id, guild_id))
             
             all_data = cur.fetchall()
             #print("\n=== All data before grouping ===")
             #for row in all_data:
-                #print(f"user_id: {row[0]}, username: {row[1]}, points: {row[2]}, source: {row[3]}")
+                #    print(f"user_id: {row[0]}, username: {row[1]}, points: {row[2]}, source: {row[3]}")
             
-            # Now do the actual update
-            cur.execute("DELETE FROM leaderboard;")
+            # Now do the actual update (guild-specific)
+            cur.execute(
+                "DELETE FROM leaderboard WHERE guild_id = %s;",
+                (guild_id,)
+            )
+
             cur.execute("""
                 WITH combined AS (
-                    SELECT user_id, username, points FROM race_scores
+                    SELECT guild_id, user_id, username, points
+                    FROM race_scores
+                    WHERE guild_id = %s
+
                     UNION ALL
-                    SELECT user_id, username, points FROM final_scores
+
+                    SELECT guild_id, user_id, username, points
+                    FROM final_scores
+                    WHERE guild_id = %s
+
                     UNION ALL
-                    SELECT userid AS user_id, username, points FROM total_force_points
+
+                    SELECT guild_id, user_id AS user_id, username, points
+                    FROM total_force_points
+                    WHERE guild_id = %s
                 )
-                INSERT INTO leaderboard (user_id, username, total_points)
+                INSERT INTO leaderboard (guild_id, user_id, username, total_points)
                 SELECT
+                    guild_id,
                     user_id,
                     MAX(username) AS username,
                     SUM(points) AS total_points
                 FROM combined
-                GROUP BY user_id
+                GROUP BY guild_id, user_id
                 ORDER BY total_points DESC;
-            """)
+            """, (guild_id, guild_id, guild_id))
             
             # Check what got inserted
-            cur.execute("SELECT user_id, username, total_points FROM leaderboard ORDER BY total_points DESC;")
+            cur.execute("""
+                SELECT user_id, username, total_points
+                FROM leaderboard
+                WHERE guild_id = %s
+                ORDER BY total_points DESC;
+            """, (guild_id,))
+            
             results = cur.fetchall()
             #print("\n=== Leaderboard after update ===")
             for row in results:
@@ -445,113 +509,121 @@ def update_leaderboard():
             
             conn.commit()
             cur.close()
+
         except Exception as e:
             conn.rollback()
             print("Error updating leaderboard:", e)
             import traceback
             traceback.print_exc()
         finally:
-            conn.close() 
+            conn.close()
 
-def get_top_n(n):
-    """Return top n users with points"""
+def get_top_n(guild_id, n):
     return safe_fetch_all(
-        "SELECT username, total_points FROM leaderboard ORDER BY total_points DESC LIMIT %s",
-        (n,)
+        """
+        SELECT username, total_points
+        FROM leaderboard
+        WHERE guild_id = %s
+        ORDER BY total_points DESC
+        LIMIT %s
+        """,
+        (guild_id, n)
     )
 
-def get_user_rank(username):
-    """Return rank and points for a given user"""
+
+def get_user_rank(guild_id, username):
     row = safe_fetch_one("""
         SELECT rank, total_points FROM (
-            SELECT username, total_points, RANK() OVER (ORDER BY total_points DESC) AS rank
+            SELECT username, total_points,
+                   RANK() OVER (ORDER BY total_points DESC) AS rank
             FROM leaderboard
+            WHERE guild_id = %s
         ) sub
         WHERE username = %s
-    """, (username,))
-    return row  # row is a dict if using DictCursor; None if user not found
+    """, (guild_id, username))
+    return row
 
-def save_crazy_prediction(user_id, username, season, prediction, timestamp):
+def save_crazy_prediction(guild_id, user_id, username, season, prediction, timestamp):
     safe_execute(
         """
-        INSERT INTO crazy_predictions (user_id, username, season, prediction, timestamp)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO crazy_predictions (guild_id, user_id, username, season, prediction, timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (user_id, username, season, prediction, timestamp)
+        (guild_id, user_id, username, season, prediction, timestamp)
     )
 
-def get_crazy_predictions(user_id, season):
+def get_crazy_predictions(guild_id, user_id, season):
     return safe_fetch_all(
         """
         SELECT prediction, timestamp
         FROM crazy_predictions
-        WHERE user_id = %s AND season = %s
+        WHERE guild_id = %s AND user_id = %s AND season = %s
         ORDER BY timestamp ASC
         """,
-        (user_id, season)
+        (guild_id, user_id, season)
     )
 
 
-def count_crazy_predictions(user_id, season):
+def count_crazy_predictions(guild_id, user_id, season):
     result = safe_fetch_all(
         """
         SELECT COUNT(*) AS count
         FROM crazy_predictions
-        WHERE user_id = %s AND season = %s
+        WHERE guild_id = %s AND user_id = %s AND season = %s
         """,
-        (user_id, season)
+        (guild_id, user_id, season)
     )
     return result[0]["count"]
 
-def save_bold_prediction(user_id, race_number, username, race_name, prediction, timestamp):
+def save_bold_prediction(guild_id, user_id, race_number, username, race_name, prediction, timestamp):
     safe_execute(
         """
         INSERT INTO bold_predictions
-        (user_id, race_number, username, race_name, prediction, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT(user_id, race_number) DO UPDATE SET
+        (guild_id, user_id, race_number, username, race_name, prediction, timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
             username = excluded.username,
             race_name = excluded.race_name,
             prediction = excluded.prediction,
             timestamp = excluded.timestamp
         """,
-        (user_id, race_number, username, race_name, prediction, timestamp)
+        (guild_id, user_id, race_number, username, race_name, prediction, timestamp)
     )
 
-def fetch_bold_predictions(race_number):
+def fetch_bold_predictions(guild_id, race_number):
     return safe_fetch_all("""
             SELECT username, prediction
             FROM bold_predictions
-            WHERE race_number = %s
+            WHERE guild_id = %s AND race_number = %s
             ORDER BY timestamp ASC
             """,
-            (race_number,)
+            (guild_id, race_number,)
         ) or []
 
-def prediction_state_log(user_id, username, command, prediction, state):
-        safe_execute("""
-        INSERT INTO prediction_lock_log (user_id, username, command, prediction, state)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (user_id, username, command, prediction, state)
-    )
+def prediction_state_log(guild_id, user_id, username, command, prediction, state):
+    safe_execute("""
+        INSERT INTO prediction_lock_log
+        (guild_id, user_id, username, command, prediction, state)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (guild_id, user_id, username, command, prediction, state))
         
-def get_persistent_message(key):
-        return safe_fetch_one(
-            "SELECT channel_id, message_id FROM persistent_messages WHERE key = %s",
-            (key,)
-        )
+def get_persistent_message(guild_id, key):
+    return safe_fetch_one(
+        "SELECT channel_id, message_id FROM persistent_messages WHERE guild_id = %s AND key = %s",
+        (guild_id, key)
+    )
 
-def save_persistent_message(key, channel_id, message_id):
-        safe_execute(
-            """
-            INSERT INTO persistent_messages (key, channel_id, message_id)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (key)
-            DO UPDATE SET channel_id = excluded.channel_id,
-                          message_id = excluded.message_id
-            """,
-            (key, channel_id, message_id)
-        )
+def save_persistent_message(guild_id, key, channel_id, message_id):
+    safe_execute(
+        """
+        INSERT INTO persistent_messages (guild_id, key, channel_id, message_id)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (guild_id, key)
+        DO UPDATE SET channel_id = excluded.channel_id,
+                      message_id = excluded.message_id
+        """,
+        (guild_id, key, channel_id, message_id)
+    )
 
 def set_prediction_channel(guild_id: int, channel_id: int):
     query = """
