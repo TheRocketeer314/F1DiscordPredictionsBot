@@ -211,6 +211,14 @@ def init_db():
     prediction_channel_id BIGINT NOT NULL
 );
 """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guilds (
+                guild_id BIGINT PRIMARY KEY,
+                guild_name TEXT NOT NULL
+            );
+        """)
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -245,6 +253,14 @@ def safe_fetch_one(query, params=()):
         cur.close()
         conn.close()
         return result
+
+def upsert_guild(guild_id: int, guild_name: str):
+        safe_execute("""
+            INSERT INTO guilds (guild_id, guild_name)
+            VALUES (%s, %s)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET guild_name = excluded.guild_name;
+        """, (guild_id, guild_name))
 
 def save_race_predictions(guild_id, user_id, username, race_number, race_name, preds):
     safe_execute(
@@ -590,15 +606,28 @@ def save_bold_prediction(guild_id, user_id, race_number, username, race_name, pr
         (guild_id, user_id, race_number, username, race_name, prediction, timestamp)
     )
 
-def fetch_bold_predictions(guild_id, race_number):
-    return safe_fetch_all("""
+def fetch_bold_predictions(guild_id, race_number=None, race_name=None):
+    if race_number is not None:
+        return safe_fetch_all("""
             SELECT username, prediction
             FROM bold_predictions
             WHERE guild_id = %s AND race_number = %s
             ORDER BY timestamp ASC
             """,
-            (guild_id, race_number,)
-        ) or []
+            (guild_id, race_number))
+    
+    elif race_name is not None:
+        return safe_fetch_all("""
+            SELECT username, prediction
+            FROM bold_predictions
+            WHERE guild_id = %s AND race_name = %s
+            ORDER BY timestamp ASC
+            """,
+            (guild_id, race_name))
+    else:
+        return []
+    
+
 
 def prediction_state_log(guild_id, user_id, username, command, prediction, state):
     safe_execute("""

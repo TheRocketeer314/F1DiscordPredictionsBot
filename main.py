@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 import asyncio
 import fastf1
 from pathlib import Path
-from FastF1_service import refresh_race_cache, race_results, sprint_results
+from collections import defaultdict
+from FastF1_service import refresh_race_cache, season_calender
 from database import (init_db, save_race_predictions,
                       save_constructor_prediction,
                       save_sprint_predictions,
@@ -31,11 +32,12 @@ from database import (init_db, save_race_predictions,
                       set_prediction_channel,
                       get_prediction_channel,
                       guild_default_lock,
-                      ensure_lock_rows)
+                      ensure_lock_rows,
+                      upsert_guild)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
-from get_now import get_now, TIME_MULTIPLE
+from get_now import get_now, TIME_MULTIPLE, SEASON
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +57,7 @@ fastf1.Cache.enable_cache(str(cache_dir))
 
 #Globals
 RACE_CACHE: dict = {}
+SEASON_CALENDER = []
 
 main_predictions = {}
 sprint_predictions = {}
@@ -153,12 +156,15 @@ def sprint_predictions_open(guild_id, now: datetime, RACE_CACHE) -> bool:
 
 @bot.event
 async def on_ready():
+    global SEASON_CALENDER
     init_db()
     await bot.tree.sync()
     initial = refresh_race_cache(get_now())
     if initial:
         RACE_CACHE.update(initial)
     print("Bot is ready.")
+    SEASON_CALENDER = season_calender(SEASON)
+
     #print(lock_time,type(lock_time) )
     if getattr(bot, "cache_task_started", False):
         return # Prevent multiple tasks
@@ -175,6 +181,10 @@ async def on_ready():
     if not bold_predictions_publisher.is_running():
         bold_predictions_publisher.start()
         print("Bold loop started")
+
+    for guild in bot.guilds:
+        upsert_guild(guild.id, guild.name)
+        #print(f"Synced guild {guild.name} ({guild.id})")
 
 
     '''for cmd in bot.tree.walk_commands():
@@ -207,11 +217,20 @@ async def on_guild_join(guild: discord.Guild):
     guild_id = guild.id
     print(f"Joined new guild: {guild.name} ({guild_id})")
 
+    guild_name = guild.name
+
+    # Adds Guild to Guild Table
+    upsert_guild(guild._id, guild_name)
     # Set up default season state
     guild_default_lock(guild_id)
 
     # Add default prediction locks for this guild
     ensure_lock_rows(guild_id)
+
+@bot.event
+async def on_guild_update(before, after):
+    if before.name != after.name:
+        upsert_guild(after.id, after.name)
 
 user_predictions = {}
 
@@ -238,10 +257,14 @@ CONSTRUCTORS = [
     "Aston Martin", "Haas", "Racing Bulls","Audi",
     "Williams", "Cadillac", "Alpine"]
 
+user_predictions = defaultdict(
+    lambda: defaultdict(
+        lambda: defaultdict(lambda: [None] * 5)
+    )
+)
 class PredictionSelect(discord.ui.Select):
     def __init__(self, index, current_selection=None):
         self.index = index
-        # Build options and mark the current selection as default if provided
         options = [
             discord.SelectOption(label=d, value=d, default=(d == current_selection))
             for d in DRIVERS
@@ -251,34 +274,28 @@ class PredictionSelect(discord.ui.Select):
             options=options
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction):  # <-- indented inside class
         await interaction.response.defer(ephemeral=True)
         now = get_now()
 
-        if not predictions_open(
-            interaction.guild.id,
-            now,
-            RACE_CACHE
-           ):
+        if not predictions_open(interaction.guild.id, now, RACE_CACHE):
             self.view.disable_all()
             await interaction.edit_original_response(
                 content="🔒 Predictions are closed.",
                 view=self.view
             )
             return
-        
+
+        guild_id = interaction.guild.id
+        race_number = int(RACE_CACHE.get("race_number"))
         user_id = interaction.user.id
-        if user_id not in user_predictions:
-            user_predictions[user_id] = [None] * 5
+        preds = user_predictions[guild_id][race_number][user_id]
 
         selected_driver = self.values[0]
-        previous = user_predictions[user_id][self.index]
+        previous = preds[self.index]
 
-        # For Positions 1-3, dynamically update other selects to prevent duplicates
         if self.index < 3:
-            # other selections for positions 0-2 excluding this index
-            other_selected = {v for i, v in enumerate(user_predictions[user_id][:3]) if v and i != self.index}
-            # If another position already has this driver and it's not this position's previous value, reject
+            other_selected = {v for i, v in enumerate(preds[:3]) if v and i != self.index}
             if selected_driver in other_selected and selected_driver != previous:
                 await interaction.followup.send(
                     f"❌ {selected_driver} already selected for Positions 1-3. Pick a different driver!",
@@ -286,59 +303,46 @@ class PredictionSelect(discord.ui.Select):
                 )
                 return
 
-            # store the new selection
-            user_predictions[user_id][self.index] = selected_driver
+            preds[self.index] = selected_driver
             save_race_predictions(
-                interaction.guild.id,
-                interaction.user.id,
-                interaction.user.name,
-                int(RACE_CACHE.get("race_number")),
-                RACE_CACHE.get("race_name"),
-                user_predictions[user_id]
+                guild_id, user_id, interaction.user.name,
+                race_number, RACE_CACHE.get("race_name"), preds
             )
 
-            # recompute taken drivers for positions 0-2
-            taken = {v for v in user_predictions[user_id][:3] if v}
+            taken = {v for v in preds[:3] if v}
 
-            # update options on other select children in this view
             for child in list(self.view.children):
                 if isinstance(child, PredictionSelect) and child.index < 3:
-                    # allow the child's own current choice to remain visible
-                    curr = user_predictions[user_id][child.index]
+                    curr = preds[child.index]
                     new_options = []
                     for d in DRIVERS:
                         if d not in taken or d == curr:
-                            new_options.append(discord.SelectOption(label=d, value=d, default=(d == curr)))
+                            new_options.append(
+                                discord.SelectOption(label=d, value=d, default=(d == curr))
+                            )
                     child.options = new_options
 
-            # edit the message to apply the updated view
+            # Fix: use edit_original_response instead of followup.edit_message
             await interaction.edit_original_response(view=self.view)
-            #print(f"{interaction.user.name}'s predictions: {user_predictions[user_id]}")
             return
 
-        # Fastest Lap and Pole can repeat drivers
-        user_predictions[user_id][self.index] = selected_driver
+        # Positions 3 and 4 (Fastest Lap / Pole) — duplicates allowed
+        preds[self.index] = selected_driver
         save_race_predictions(
-                interaction.guild.id,
-                interaction.user.id,
-                interaction.user.name,
-                int(RACE_CACHE.get("race_number")),
-                RACE_CACHE.get("race_name"),
-                user_predictions[user_id]
-            )
-        #print(f"{interaction.user.name}'s predictions: {user_predictions[user_id]}")
-        #await interaction.response.defer(ephemeral=True)
-
+            guild_id, user_id, interaction.user.name,
+            race_number, RACE_CACHE.get("race_name"), preds
+        )
 class PredictionView(discord.ui.View):
     def __init__(self, guild_id, user_id=None):
         super().__init__(timeout=300)
         self.guild_id = guild_id
+        race_number = int(RACE_CACHE.get("race_number"))
 
         # Add the selects
         for i in range(5):
             current = None
             if user_id and user_id in user_predictions:
-                current = user_predictions[user_id][i]
+                current = user_predictions[guild_id][race_number][user_id][i]
             self.add_item(PredictionSelect(i, current_selection=current))
 
         # Disable everything if predictions are closed
@@ -479,7 +483,14 @@ async def force_points(
         points: int,
         reason: str | None = None
 ):
+
+    
     await interaction.response.defer(ephemeral=True)
+
+    if user == interaction.client.user:
+        await interaction.followup.send("❌ Cannot award points to the bot.", ephemeral=True)
+        return
+    
     await interaction.followup.send(f"Awarded {user.mention} {points} points", 
                                     ephemeral=True)
     
@@ -763,13 +774,15 @@ async def guide_command(interaction: discord.Interaction):
     embed.add_field(name="/crazy_predict", value="Make your crazy predictions for the season", inline=False)
     embed.add_field(name="/view_crazy_predictions", value="View a user's crazy predictions", inline=False)
     embed.add_field(name="/race_bold_predict", value="Make your bold predictions for the race", inline=False)
+    embed.add_field(name="/view_race_bold_predictions", value="View the bold predictions for a race.", inline=False)
     embed.add_field(name="/update_leaderboard", value="Update the leaderboard with the latest points (please refrain from using if no points were added since the last update)", inline=False)
-    embed.add_field(name="/force_points", value="**MOD ONLY**  Add/subtract points to a user's points tally", inline=False)
-    embed.add_field(name="/prediction_lock", value="**MOD ONLY**  Manually lock/unlock race predictions", inline=False)
-    embed.add_field(name="/season_lock", value="**MOD ONLY**  Lock season (WDC & WCC) predictions", inline=False)
-    embed.add_field(name="/season_unlock", value="**MOD ONLY**  Unlock season (WDC & WCC) predictions", inline=False)
+    embed.add_field(name="/force_points", value="**MODS ONLY**  Add/subtract points to a user's points tally", inline=False)
+    embed.add_field(name="/prediction_lock", value="**MODS ONLY**  Manually lock/unlock race predictions", inline=False)
+    embed.add_field(name="/season_lock", value="**MODS ONLY**  Lock season (WDC & WCC) predictions", inline=False)
+    embed.add_field(name="/season_unlock", value="**MODS ONLY**  Unlock season (WDC & WCC) predictions", inline=False)
+    embed.add_field(name="/set_channel", value="**MODS ONLY**  Set the channel in which to receive Race Bold Predictions before every race. If not set, bold predictions will not be automatically displayed.", inline=False)
     embed.add_field(name="________________", value="__________________________________", inline=True)
-    embed.add_field(name="Thanks!-", value="TheRocketeer314 and your mod team (@Sha, @Agastya, @Flashallen)", inline=False)
+    embed.add_field(name="Thanks!-", value="TheRocketeer314", inline=False)
 
 
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -926,7 +939,7 @@ async def bold_predictions_publisher():
 
         for guild in bot.guilds:
             guild_id = guild.id
-            preds = fetch_bold_predictions(guild_id, race_number)
+            preds = fetch_bold_predictions(guild_id, race_number = race_number)
             print(f"{guild.name} ({guild_id}) PRED COUNT:", len(preds))
 
             # render message
@@ -975,6 +988,47 @@ async def bold_predictions_publisher():
 
     except Exception as e:
         print("BOLD LOOP ERROR:", e)
+
+def format_bold_predictions(race_name, rows):
+    if not rows:
+        return f"❌ No bold predictions found for **{race_name}**"
+    
+    message = f"🧨 **Bold Predictions for {race_name}:**\n"
+    for username, prediction, in rows:
+        message += f"> **{username}**: {prediction}\n"
+    return message
+
+@bot.tree.command(
+    name="view_race_bold_predictions",
+    description="View bold predictions for a specific race"
+)
+@app_commands.describe(race="Select the race")
+async def view_race_bold_preds(interaction: discord.Interaction, race: str):
+    await interaction.response.defer(ephemeral=True)
+
+    # use the unified function with race_name
+    rows = fetch_bold_predictions(interaction.guild.id, race_name=race)
+
+    if not rows:
+        await interaction.followup.send(f"❌ No bold predictions found for **{race}**", ephemeral=True)
+        return
+
+    message = format_bold_predictions(race, rows)
+    await interaction.followup.send(message)
+
+@view_race_bold_preds.autocomplete('race')
+async def race_autocomplete(interaction: discord.Interaction, current: str):
+    try:
+        # Return up to 25 matching race names
+        return [
+            app_commands.Choice(name=str(race), value=str(race))
+            for race in SEASON_CALENDER
+            if current.lower() in str(race).lower()
+        ][:25]
+    except Exception as e:
+        print("Autocomplete ERROR", e)
+        return []
+
 
 @bot.tree.command(name="set_channel", description="Set or update the prediction channel")
 @app_commands.checks.has_permissions(administrator=True)

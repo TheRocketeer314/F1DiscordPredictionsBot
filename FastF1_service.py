@@ -5,6 +5,11 @@ import pandas as pd
 from database import safe_fetch_one
 from get_now import get_now, SEASON
 
+def season_calender(season):
+    schedule = fastf1.get_event_schedule(season)
+    return schedule['EventName'].tolist()
+
+        
 def refresh_race_cache(now=None, year=None):
     if year is None:
         year = SEASON
@@ -259,7 +264,7 @@ def get_race_end_time(now):
         # Check if this race has been scored
         existing_scores = safe_fetch_one(
             "SELECT 1 FROM race_scores WHERE race_number = %s LIMIT 1",
-            (race_number)
+            (race_number,)
         )
         
         if not existing_scores:

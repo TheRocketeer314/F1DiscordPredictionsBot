@@ -214,3 +214,44 @@ def score_final_champions():
             traceback.print_exc()
         finally:
             conn.close()
+
+def score_final_champions_for_guild(guild_id):
+    # Fetch all predictions for this guild
+    predictions = safe_fetch_all(
+        "SELECT * FROM season_predictions WHERE guild_id=%s",
+        (guild_id,)
+    )
+    if not predictions:
+        return
+
+    # Fetch real final champions
+    result = safe_fetch_one(
+        "SELECT wdc, wcc FROM final_champions"
+    )
+    if not result:
+        return
+
+    real_wdc = result['wdc']
+    real_wcc = result['wcc']
+
+    for pred in predictions:
+        score = 0
+
+        if pred['wdc'] == real_wdc:
+            score += 20
+
+        if pred['wcc'].lower() == real_wcc.lower():
+            score += 20
+
+        safe_execute(
+            """
+            INSERT INTO final_scores (
+                guild_id, user_id, username, points
+            )
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                username = excluded.username,
+                points = excluded.points
+            """,
+            (guild_id, pred['user_id'], pred['username'], score)
+        )

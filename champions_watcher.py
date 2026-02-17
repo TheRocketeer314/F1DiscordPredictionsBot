@@ -1,10 +1,9 @@
 # final_champions_watcher.py
 import asyncio
 from FastF1_service import get_final_champions_if_ready, get_season_end_time
-from database import save_final_champions, update_leaderboard
-from scoring import score_final_champions
+from database import save_final_champions, update_leaderboard, safe_fetch_one
+from scoring import score_final_champions, score_final_champions_for_guild
 from get_now import get_now, TIME_MULTIPLE
-
 
 async def final_champions_loop(bot):
     await bot.wait_until_ready()
@@ -14,7 +13,7 @@ async def final_champions_loop(bot):
 
     delay = (season_end_time - get_now()).total_seconds()
     if delay > 0:
-        await asyncio.sleep(delay/TIME_MULTIPLE)
+        await asyncio.sleep(delay / TIME_MULTIPLE)
 
     # One or two guarded attempts (data lag protection)
     for _ in range(2):
@@ -28,9 +27,25 @@ async def final_champions_loop(bot):
 
             save_final_champions(wdc, wcc)
 
-            score_final_champions()
+            # Score per guild (like race loop)
             for guild in bot.guilds:
-                update_leaderboard(guild.id)
+                guild_id = guild.id
+
+                # Prevent double scoring
+                existing_scores = safe_fetch_one(
+                    "SELECT 1 FROM final_scores WHERE guild_id = %s LIMIT 1",
+                    (guild_id,)
+                )
+
+                if existing_scores:
+                    print(f"Final champions already scored for guild {guild.name}")
+                    continue
+
+                print(f"Scoring final champions for guild {guild.name}...")
+                score_final_champions_for_guild(guild_id)
+                update_leaderboard(guild_id)
+                print(f"Final champions scored for guild {guild.name}")
+
             return
 
-        await asyncio.sleep(3600/TIME_MULTIPLE)  # rare delay fallback
+        await asyncio.sleep(3600 / TIME_MULTIPLE)

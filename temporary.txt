@@ -553,3 +553,34 @@ async def poll_results_loop(bot):
             import traceback
             traceback.print_exc()
             await asyncio.sleep(60 * 60 / TIME_MULTIPLE)
+
+_____________________________________________________________________________________
+
+async def final_champions_loop(bot):
+    await bot.wait_until_ready()
+    loop = asyncio.get_running_loop()
+
+    season_end_time = get_season_end_time()
+
+    delay = (season_end_time - get_now()).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay/TIME_MULTIPLE)
+
+    # One or two guarded attempts (data lag protection)
+    for _ in range(2):
+        result = await loop.run_in_executor(None, get_final_champions_if_ready)
+
+        if result:
+            wdc_winner, wcc_winner = result
+
+            wdc = wdc_winner[:3].upper()
+            wcc = wcc_winner
+
+            save_final_champions(wdc, wcc)
+
+            score_final_champions()
+            for guild in bot.guilds:
+                update_leaderboard(guild.id)
+            return
+
+        await asyncio.sleep(3600/TIME_MULTIPLE)  # rare delay fallback

@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 
 real_time = datetime.now(timezone.utc)
-TARGET = datetime(2025, 11, 27, 13, 00, tzinfo=timezone.utc) #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+TARGET = datetime(2025, 11, 26, 8, 00, tzinfo=timezone.utc) #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
 if TARGET:
     OFFSET = real_time - TARGET
 TEST_TIME = None
