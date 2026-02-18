@@ -3,8 +3,15 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 import os
+import socket
 
 load_dotenv()
+
+#Force IPv4 
+orig_getaddrinfo = socket.getaddrinfo
+def getaddrinfo_ipv4(*args, **kwargs):
+    return [ai for ai in orig_getaddrinfo(*args, **kwargs) if ai[0] == socket.AF_INET]
+socket.getaddrinfo = getaddrinfo_ipv4
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 #print (DATABASE_URL)
