@@ -564,7 +564,7 @@ async def constructor_prediction(interaction: discord.Interaction, constructor: 
 async def constructor_prediction_cmd(interaction: discord.Interaction, constructor: str):
     await constructor_prediction(interaction, constructor)
 
-@bot.tree.command(name="prediction_lock", description="Manually Lock/Unlock predictions")
+@bot.tree.command(name="prediction_lock", description="Manually Lock/Unlock predictions (MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.choices(
     prediction=[
@@ -755,37 +755,117 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.followup.send(f"**Leaderboard**\n{top10_text}{user_text}",
                                             ephemeral=True)
 
-@bot.tree.command(name="guide", description="Get a list of bot commands and how to use them")
-async def guide_command(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+GUIDE_DICTIONARY = {
+    "Race Predictions": 
+                    {"/race_predict": 
+                    "Make your race predictions.\n\nPredict the Podium, Polesitter and Fastest Lap of the race.\n\n*Predictions will lock at the start of Qualifying.*",
+                    "/constructor_predict":
+                    "Predict the constructor that will score the most points in a race.\n\n*Predictions will lock at the start of Qualifying.*",
+                    "/race_bold_predict":
+                    "Make your bold predictions for the race.\n\nThese will be pinned before the start of Qualifying for discussion if a channel is set\n\n*Predictions will lock at the start of Qualifying*",
+                    "/sprint_predict": 
+                    "Make your sprint race predictions.\n\nPredict the Sprint Winner and Sprint Polesitter on Sprint Weekends.\n\n*Sprint Predictions will lock at the start of Sprint Qualifying*",},
+    "Season Predictions": 
+                    {"/season_predict":
+                     "Predict the WDC and WCC of a season if season predictions are open.",
+                     "/crazy_predict":
+                     "Make your craziest predictions for the season. These can be anything from driver transfers to retirements and more!\n\n**Crazy Predictions are limited to a maximum of 5 predictions per user per season**",},
+    "View Predictions":
+                    {"/view_race_bold_predictions":
+                     "View all bold predictions for a selected race.",
+                     "/view_crazy_predictions":
+                     "View all crazy predictions given by a selected user.",},
+    "Leaderboard":
+                    {"/leaderboard":
+                     "View the leaderboard for your server.",
+                     "/update_leaderboard":
+                     "Update the leaderboard if points have been manually added.\n\n*Please refrain from using this if no points have been manually added since the last update.*\n\n**Leaderboard will be automatically updated ONE day after the race ends.**",},
+    "MOD Commands":
+                    {"*MODS ONLY*":
+                     "These commands can only be used by the moderators of a server",
+                     "/force_points":
+                     "Manually give/deduct points to/from user.",
+                     "/prediction_lock":
+                     "Manually lock/unlock race/sprint predictions.",
+                     "/season_lock":
+                     "Lock season predictions.",
+                     "/season_unlock":
+                     "Unlock season predictions.",},
+    "Set Channel":
+                    ("/set_channel",
+                     "**MODS ONLY**\n\nSet the channel in which to receive messages.\n\nThis should ideally be the channel in which the prediction competetition will be carried out"),
+    "Guide":
+                    ("/guide",
+                     "View this guide.\n\n(Congratulations! If you're here, you already know how to use this!)"),
+    "Want to help improve this bot?":
+                    ("[View this bot's GitHub repository](https://github.com/TheRocketeer314/F1DiscordPredictionsBot) to open an issue or submit a pull request.\n\nThanks! -\n      TheRocketeer314")}
+
+class GuideSelect(discord.ui.Select):
+    def __init__(self):
+        # One option per top-level category
+        options = [
+            discord.SelectOption(
+                label=category,
+                value=category
+            )
+            for category, commands in GUIDE_DICTIONARY.items()
+        ]
+        super().__init__(
+            placeholder="Select a guide category...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        category = self.values[0]
+        commands = GUIDE_DICTIONARY[category]
+
+        embed = discord.Embed(
+            title=category,
+            color=discord.Color.red()
+        )
+
+        # Build the description listing all commands in this category
+        if isinstance(commands, dict):
+            desc_lines = [f"**{cmd}**\n{desc}" for cmd, desc in commands.items()]
+            embed.description = "\n\n".join(desc_lines)
+        elif isinstance(commands, tuple):
+            cmd, desc = commands
+            embed.description = f"**{cmd}**\n{desc}"
+        else:
+            embed.description = str(commands)
+
+        embed.set_footer(text="Use the dropdown below to view another category.")
+
+        await interaction.edit_original_response(embed=embed, view=self.view)
+
+class GuideView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.add_item(GuideSelect())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Prevent random users from hijacking it
+        return interaction.user.id == self.user_id
+
+@bot.tree.command(name="guide", description="View the F1 Predictions guide")
+async def guide(interaction: discord.Interaction):
+
     embed = discord.Embed(
-        title="Bot Commands Guide",
-        description="Here’s a list of commands you can use:",
-        color=discord.Color.blue()
+        title="F1Rats Prediction Guide",
+        description="Select a command from the dropdown below to see details.",
+        color=discord.Color.red()
     )
 
-    # Add fields for each command
-    embed.add_field(name="/race_predict", value="Make your race predictions", inline=False)
-    embed.add_field(name="/sprint_predict", value="Make your sprint predictions", inline=False)
-    embed.add_field(name="/constructor_predict", value="Predict the constructor which will score the most points in a race", inline=False)
-    embed.add_field(name="/season_predict", value="Predict the WDC and WCC", inline=False)
-    embed.add_field(name="/leaderboard", value="View the F1Rats Prediction Championship leaderboard", inline=False)
-    embed.add_field(name="/guide", value="Shows this guide.", inline=False)
-    embed.add_field(name="/crazy_predict", value="Make your crazy predictions for the season", inline=False)
-    embed.add_field(name="/view_crazy_predictions", value="View a user's crazy predictions", inline=False)
-    embed.add_field(name="/race_bold_predict", value="Make your bold predictions for the race", inline=False)
-    embed.add_field(name="/view_race_bold_predictions", value="View the bold predictions for a race.", inline=False)
-    embed.add_field(name="/update_leaderboard", value="Update the leaderboard with the latest points (please refrain from using if no points were added since the last update)", inline=False)
-    embed.add_field(name="/force_points", value="**MODS ONLY**  Add/subtract points to a user's points tally", inline=False)
-    embed.add_field(name="/prediction_lock", value="**MODS ONLY**  Manually lock/unlock race predictions", inline=False)
-    embed.add_field(name="/season_lock", value="**MODS ONLY**  Lock season (WDC & WCC) predictions", inline=False)
-    embed.add_field(name="/season_unlock", value="**MODS ONLY**  Unlock season (WDC & WCC) predictions", inline=False)
-    embed.add_field(name="/set_channel", value="**MODS ONLY**  Set the channel in which to receive Race Bold Predictions before every race. If not set, bold predictions will not be automatically displayed.", inline=False)
-    embed.add_field(name="________________", value="__________________________________", inline=True)
-    embed.add_field(name="Thanks!-", value="TheRocketeer314", inline=False)
-
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.response.send_message(
+        embed=embed,
+        view=GuideView(interaction.user.id),
+        ephemeral=True
+    )
 
 @bot.tree.command(
     name="crazy_predict",
@@ -1030,7 +1110,7 @@ async def race_autocomplete(interaction: discord.Interaction, current: str):
         return []
 
 
-@bot.tree.command(name="set_channel", description="Set or update the prediction channel")
+@bot.tree.command(name="set_channel", description="Set or update the prediction channel (MODS ONLY)")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     try:
