@@ -38,11 +38,14 @@ from database import (init_db, save_race_predictions,
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
 from get_now import get_now, TIME_MULTIPLE, SEASON
+from keep_alive import keep_alive
 
 # Load environment variables
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+
+keep_alive()
 
 # Set up bot intents
 intents = discord.Intents.default()
