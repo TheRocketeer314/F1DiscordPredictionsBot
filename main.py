@@ -91,7 +91,7 @@ async def race_cache_watcher():
 
         if delay <= 0:
             # Missed it or startup case
-            new_cache = refresh_race_cache(now)
+            new_cache = await refresh_race_cache(now)
             if new_cache:
                 RACE_CACHE.clear()
                 RACE_CACHE.update(new_cache)
@@ -108,7 +108,7 @@ async def race_cache_watcher():
             return  # task cancelled on shutdown or restart
 
         # Time reached
-        new_cache = refresh_race_cache(now)
+        new_cache = await refresh_race_cache(now)
         if new_cache:
             RACE_CACHE.clear()
             RACE_CACHE.update(new_cache)
@@ -162,11 +162,11 @@ async def on_ready():
     global SEASON_CALENDER
     init_db()
     await bot.tree.sync()
-    initial = refresh_race_cache(get_now())
+    initial = await refresh_race_cache(get_now())
     if initial:
         RACE_CACHE.update(initial)
     print("Bot is ready.")
-    SEASON_CALENDER = season_calender(SEASON)
+    SEASON_CALENDER = await season_calender(SEASON)
 
     #print(lock_time,type(lock_time) )
     if getattr(bot, "cache_task_started", False):

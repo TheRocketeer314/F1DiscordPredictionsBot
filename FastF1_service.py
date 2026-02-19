@@ -1,16 +1,19 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 import fastf1
 from fastf1.ergast import Ergast
 import pandas as pd
+import shutil
+import os
 from database import safe_fetch_one
 from get_now import get_now, SEASON
 
-def season_calender(season):
+async def season_calender(season):
     schedule = fastf1.get_event_schedule(season)
     return schedule['EventName'].tolist()
 
         
-def refresh_race_cache(now=None, year=None):
+async def refresh_race_cache(now=None, year=None):
     if year is None:
         year = SEASON
 
@@ -18,7 +21,8 @@ def refresh_race_cache(now=None, year=None):
         now = datetime.now(timezone.utc)
     #print("Fetching F1 schedule...")
     # Fetch schedule once
-    schedule = fastf1.get_event_schedule(year)
+    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+
     #print("Schedule fetched!")
 
     # Convert only the columns we need to UTC-aware datetime
@@ -69,6 +73,9 @@ def refresh_race_cache(now=None, year=None):
     else:
         next_refresh = None
 
+    await asyncio.to_thread(shutil.rmtree, fastf1.Cache.CACHE_DIR, True)
+    await asyncio.to_thread(os.makedirs, fastf1.Cache.CACHE_DIR, exist_ok=True)
+
     return {
         "race_number": race_number,
         "race_name": race_name,
@@ -81,11 +88,12 @@ def refresh_race_cache(now=None, year=None):
         "next_refresh": next_refresh,
     }
 
-def race_results(year=None):
+async def race_results(year=None):
     if year is None:
         year = SEASON
 
-    schedule = fastf1.get_event_schedule(year)
+    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+
 
     # FORCE UTC-awareness
     schedule["Session5DateUtc"] = pd.to_datetime(
@@ -134,6 +142,8 @@ def race_results(year=None):
     
     pole = quali_results.iloc[0]["Abbreviation"] if not quali_results.empty else None
     quali_second = quali_results.iloc[1]["Abbreviation"] if not quali_results.empty else None
+
+
     return {
         "race_number": race_number,
         "race_name": finished_race,
@@ -146,11 +156,12 @@ def race_results(year=None):
         "winning_constructor": winning_constructor
     }
 
-def sprint_results(year=None):
+async def sprint_results(year=None):
     if year is None:
         year = SEASON
 
-    schedule = fastf1.get_event_schedule(year)
+    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+
     # Get timing of the next Quali session
     schedule["Session5DateUtc"] = pd.to_datetime(
         schedule["Session5DateUtc"], utc=True, errors="coerce"
@@ -200,7 +211,7 @@ def sprint_results(year=None):
         "sprint_pole": sprint_pole
     }
  
-def get_final_champions_if_ready(year=None):
+async def get_final_champions_if_ready(year=None):
     if year is None:
         year = SEASON
 
@@ -212,7 +223,8 @@ def get_final_champions_if_ready(year=None):
     Returns (WDC_winner, WCC_winner) or None if not ready.
     """
     # Get season calendar
-    calendar = fastf1.get_event_schedule(year)
+    calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+
     last_race = calendar.iloc[-1]
     race_date = pd.to_datetime(last_race["Session5DateUtc"],utc=True,errors="coerce")
 
@@ -234,9 +246,10 @@ def get_final_champions_if_ready(year=None):
 
     return wdc_winner, wcc_winner
 
-def get_race_end_time(now):
+async def get_race_end_time(now):
     """Get the end time of the next unscored race."""
-    schedule = fastf1.get_event_schedule(SEASON)
+    schedule = await asyncio.to_thread(fastf1.get_event_schedule, SEASON)
+
     
     schedule["Session5DateUtc"] = pd.to_datetime(
         schedule["Session5DateUtc"],
@@ -278,11 +291,12 @@ def get_race_end_time(now):
     
     return None
 
-def get_season_end_time(year=None):
+async def get_season_end_time(year=None):
     if year is None:
         year = SEASON
 
-    calendar = fastf1.get_event_schedule(year)
+    calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+
     last_race = calendar.iloc[-1]
 
     race_start = pd.to_datetime(

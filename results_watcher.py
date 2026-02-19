@@ -1,5 +1,8 @@
 # results_watcher.py
 import asyncio
+import fastf1
+import os
+import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
 from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard
 from scoring import score_race, score_race_for_guild
@@ -11,7 +14,7 @@ async def poll_results_loop(bot):
 
     while not bot.is_closed():
         try:
-            race_end_time = get_race_end_time(get_now())
+            race_end_time = await get_race_end_time(get_now())
             if race_end_time is None:
                 print("No upcoming races found, season may be over. Waiting 24 hours...")
                 await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
@@ -22,11 +25,11 @@ async def poll_results_loop(bot):
             while delay > 0:
                 print(f"Waiting {delay/3600/TIME_MULTIPLE:.2f} hours until next race ends...")
                 await asyncio.sleep(min(delay / TIME_MULTIPLE, 600 / TIME_MULTIPLE))
-                race_end_time = get_race_end_time(get_now())
+                race_end_time = await get_race_end_time(get_now())
                 delay = (race_end_time - get_now()).total_seconds()
 
             print("Race has ended, fetching results...")
-            race_data = await loop.run_in_executor(None, race_results)
+            race_data = await race_results()
             if not race_data:
                 await asyncio.sleep(60 * 60 / TIME_MULTIPLE)
                 continue
@@ -34,9 +37,12 @@ async def poll_results_loop(bot):
             race_num = race_data['race_number']
             save_race_results(race_data)
 
-            sprint_data = await loop.run_in_executor(None, sprint_results)
+            sprint_data = await sprint_results()
             if sprint_data:
                 save_sprint_results(sprint_data)
+
+            await asyncio.to_thread(shutil.rmtree, fastf1.Cache.CACHE_DIR, True)
+            await asyncio.to_thread(os.makedirs, fastf1.Cache.CACHE_DIR, exist_ok=True)
 
             # Score per guild
             for guild in bot.guilds:
@@ -52,7 +58,7 @@ async def poll_results_loop(bot):
                     continue
 
                 print(f"Scoring race {race_num} for guild {guild.name}...")
-                score_race_for_guild(race_num, guild_id)  # new function
+                score_race_for_guild(race_num, guild_id)  
                 update_leaderboard(guild_id)
                 print(f"Race {race_num} scored and leaderboard updated for guild {guild.name}")
 
