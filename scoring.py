@@ -10,16 +10,28 @@ def score_top3(pred, result):
     if pred["pos1"] == result["pos1"] and \
        pred["pos2"] == result["pos2"] and \
        pred["pos3"] == result["pos3"]:
-        return 6
+        return 10
     if (
         (pred["pos1"] == result["pos1"] and pred["pos2"] == result["pos2"]) or
         (pred["pos1"] == result["pos1"] and pred["pos3"] == result["pos3"]) or
         (pred["pos2"] == result["pos2"] and pred["pos3"] == result["pos3"])
         ):
-        return 4
-
-    if pred_set == res_set:
+        return 7
+    if pred_set == res_set and (
+        pred["pos1"] == result["pos1"] or
+        pred["pos2"] == result["pos2"] or
+        pred["pos3"] == result["pos3"] 
+        ):
+        return 5
+    if (
+        pred["pos1"] == result["pos1"] or
+        pred["pos2"] == result["pos2"] or
+        pred["pos3"] == result["pos3"] 
+        ):
         return 2
+    
+    if pred_set == res_set:
+        return 4
 
     return 0
 
