@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, timedelta
+import os
 
 
 real_time = datetime.now(timezone.utc)
@@ -7,7 +8,10 @@ if TARGET:
     OFFSET = real_time - TARGET
 TEST_TIME = None
 TIME_MULTIPLE = 1.0
-SEASON = 2026
+try:
+    SEASON = int(os.getenv('SEASON', 2026))
+except ValueError:
+    SEASON = 2026
 
 def get_now():
     if TEST_TIME:
