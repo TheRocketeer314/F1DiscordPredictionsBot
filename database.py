@@ -117,6 +117,7 @@ def init_db():
     
     cur.execute("""
     CREATE TABLE IF NOT EXISTS final_champions (
+        season INTEGER PRIMARY KEY NOT NULL,
         wdc TEXT,
         wcc TEXT
     );
@@ -367,7 +368,7 @@ def ensure_lock_rows(guild_id: int):
 def set_manual_lock(guild_id, pred_type: str, state: str | None):
     safe_execute(
         "UPDATE prediction_locks SET manual_override = %s WHERE guild_id = %s AND type = %s",
-        (state, guild_id, pred_type)
+        (guild_id, pred_type, state)
     )
 
 def get_manual_lock(guild_id, pred_type: str) -> str | None:
@@ -427,12 +428,15 @@ def save_sprint_results(data):
         data["race_number"]
     ))
 
-def save_final_champions(wdc, wcc):
-    # Only one row ever for 2026, so replace any existing entry
-    safe_execute("DELETE FROM final_champions")
+def save_final_champions(season, wdc, wcc):
     safe_execute(
-        "INSERT INTO final_champions (wdc, wcc) VALUES (%s, %s)",
-        (wdc, wcc)
+        """INSERT INTO final_champions (season, wdc, wcc) 
+            VALUES (%s , %s, %s)
+            ON CONFLICT (season) DO UPDATE SET
+            wdc = excluded.wdc,
+            wcc = excluded.wcc
+            """,
+        (season, wdc, wcc)
     )
 
 def add_points(guild_id, user_id: str, username: str, points: int, reason: str):

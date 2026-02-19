@@ -581,7 +581,7 @@ async def pred_lock(
 ):
     await interaction.response.defer(ephemeral=False)
     if state.value == "AUTO":
-        set_manual_lock(interaction.guild.id, prediction.value, None)
+        set_manual_lock(interaction.guild.id, prediction.value,  None)
         msg = f"⚙️ **{prediction.name} predictions set to AUTO mode.**"
     else:
         set_manual_lock(interaction.guild.id, prediction.value, state.value)

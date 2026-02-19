@@ -9,9 +9,9 @@ if TARGET:
 TEST_TIME = None
 TIME_MULTIPLE = 600.0
 try:
-    SEASON = int(os.getenv('SEASON', 2026))
+    SEASON = int(os.getenv('SEASON', datetime.now().year))
 except ValueError:
-    SEASON = 2026
+    SEASON = datetime.now().year
 
 def get_now():
     if TEST_TIME:

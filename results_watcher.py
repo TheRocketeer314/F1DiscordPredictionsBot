@@ -5,7 +5,7 @@ from config import CACHE_DIR
 import os
 import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
-from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard
+from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard, get_prediction_channel
 from scoring import score_race, score_race_for_guild
 from get_now import get_now, TIME_MULTIPLE
 
@@ -63,6 +63,17 @@ async def poll_results_loop(bot):
                 score_race_for_guild(race_num, guild_id)  
                 update_leaderboard(guild_id)
                 print(f"Race {race_num} scored and leaderboard updated for guild {guild.name}")
+
+                channel_id = get_prediction_channel(guild_id)
+                if channel_id:
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        await channel.send(
+                        f"✅ **{race_data['race_name']} has been scored!**\n"
+                        f"🥇 {race_data['pos1']}  🥈 {race_data['pos2']}  🥉 {race_data['pos3']}\n"
+                        f"🏁 Pole: {race_data['pole']}  ⚡ Fastest Lap: {race_data['fastest_lap']}\n"
+                        f"🏗️ Constructor: {race_data['winning_constructor']}"
+                    )
 
             print("Sleeping 24 hours before checking for next race...")
             await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
