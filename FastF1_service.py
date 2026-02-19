@@ -73,9 +73,6 @@ async def refresh_race_cache(now=None, year=None):
     else:
         next_refresh = None
 
-    await asyncio.to_thread(shutil.rmtree, fastf1.Cache.CACHE_DIR, True)
-    await asyncio.to_thread(os.makedirs, fastf1.Cache.CACHE_DIR, exist_ok=True)
-
     return {
         "race_number": race_number,
         "race_name": race_name,
