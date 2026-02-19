@@ -1,6 +1,7 @@
 # final_champions_watcher.py
 import asyncio
 import fastf1
+from config import CACHE_DIR
 import os
 import shutil
 from FastF1_service import get_final_champions_if_ready, get_season_end_time
@@ -30,8 +31,9 @@ async def final_champions_loop(bot):
 
             save_final_champions(wdc, wcc)
 
-            await asyncio.to_thread(shutil.rmtree, fastf1.Cache.CACHE_DIR, True)
-            await asyncio.to_thread(os.makedirs, fastf1.Cache.CACHE_DIR, exist_ok=True)
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            CACHE_DIR.mkdir(exist_ok=True)
+            fastf1.Cache.enable_cache(str(CACHE_DIR))
 
             # Score per guild (like race loop)
             for guild in bot.guilds:

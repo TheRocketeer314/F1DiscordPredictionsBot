@@ -1,6 +1,7 @@
 # results_watcher.py
 import asyncio
 import fastf1
+from config import CACHE_DIR
 import os
 import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
@@ -41,8 +42,9 @@ async def poll_results_loop(bot):
             if sprint_data:
                 save_sprint_results(sprint_data)
 
-            await asyncio.to_thread(shutil.rmtree, fastf1.Cache.CACHE_DIR, True)
-            await asyncio.to_thread(os.makedirs, fastf1.Cache.CACHE_DIR, exist_ok=True)
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            CACHE_DIR.mkdir(exist_ok=True)
+            fastf1.Cache.enable_cache(str(CACHE_DIR))
 
             # Score per guild
             for guild in bot.guilds:

@@ -3,13 +3,11 @@ from datetime import datetime, timedelta, timezone
 import fastf1
 from fastf1.ergast import Ergast
 import pandas as pd
-import shutil
-import os
 from database import safe_fetch_one
 from get_now import get_now, SEASON
 
 async def season_calender(season):
-    schedule = fastf1.get_event_schedule(season)
+    schedule = await asyncio.to_thread(fastf1.get_event_schedule, season)
     return schedule['EventName'].tolist()
 
         

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
 import asyncio
-import fastf1
+from config import CACHE_DIR
 from pathlib import Path
 from collections import defaultdict
 from FastF1_service import refresh_race_cache, season_calender
@@ -51,12 +51,6 @@ keep_alive()
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
-
-# auto-create cache folder if it doesn't exist
-cache_dir = Path("fastf1cache")
-cache_dir.mkdir(exist_ok=True)
-
-fastf1.Cache.enable_cache(str(cache_dir))
 
 #Globals
 RACE_CACHE: dict = {}
@@ -223,7 +217,7 @@ async def on_guild_join(guild: discord.Guild):
     guild_name = guild.name
 
     # Adds Guild to Guild Table
-    upsert_guild(guild._id, guild_name)
+    upsert_guild(guild.id, guild_name)
     # Set up default season state
     guild_default_lock(guild_id)
 
