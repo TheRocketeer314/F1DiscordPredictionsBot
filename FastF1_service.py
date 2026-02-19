@@ -117,7 +117,7 @@ async def race_results(year=None):
         return None # Too early
     # Race session
     race_session = fastf1.get_session(year, finished_race, "Race")
-    race_session.load()
+    race_session.load(laps=True, telemetry=False, weather=False, messages=False)
     
     race_results = race_session.results
     if race_results.empty:
@@ -131,7 +131,7 @@ async def race_results(year=None):
 
     # Qualifying session
     quali_session = fastf1.get_session(year,finished_race, "Qualifying")
-    quali_session.load()
+    quali_session.load(laps=False, telemetry=False, weather=False, messages=False)
     quali_results = quali_session.results
 
     
@@ -186,14 +186,14 @@ async def sprint_results(year=None):
         return None # Too early
     # Race session
     sprint_session = fastf1.get_session(year, finished_race, "Sprint")
-    sprint_session.load()
+    sprint_session.load(laps=False, telemetry=False, weather=False, messages=False)
     sprint_results = sprint_session.results
 
     sprint_winner = sprint_results.iloc[0]["Abbreviation"]
 
     # Qualifying session
     sprintquali_session = fastf1.get_session(year, finished_race, "Sprint Qualifying")
-    sprintquali_session.load()
+    sprintquali_session.load(laps=False, telemetry=False, weather=False, messages=False)
     sprintquali_results = sprintquali_session.results
 
     sprint_pole = sprintquali_results.iloc[0]["Abbreviation"] if not sprintquali_results.empty else None
