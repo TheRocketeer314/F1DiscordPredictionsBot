@@ -368,7 +368,7 @@ def ensure_lock_rows(guild_id: int):
 def set_manual_lock(guild_id, pred_type: str, state: str | None):
     safe_execute(
         "UPDATE prediction_locks SET manual_override = %s WHERE guild_id = %s AND type = %s",
-        (guild_id, pred_type, state)
+        (state, guild_id, pred_type)
     )
 
 def get_manual_lock(guild_id, pred_type: str) -> str | None:

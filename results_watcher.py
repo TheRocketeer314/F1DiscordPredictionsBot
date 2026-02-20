@@ -69,7 +69,7 @@ async def poll_results_loop(bot):
                     channel = guild.get_channel(channel_id)
                     if channel:
                         await channel.send(
-                        f"✅ **{race_data['race_name']} has been scored!**\n"
+                        f"✅ **The {race_data['race_name']} has been scored!**\n"
                         f"🥇 {race_data['pos1']}  🥈 {race_data['pos2']}  🥉 {race_data['pos3']}\n"
                         f"🏁 Pole: {race_data['pole']}  ⚡ Fastest Lap: {race_data['fastest_lap']}\n"
                         f"🏗️ Constructor: {race_data['winning_constructor']}"
