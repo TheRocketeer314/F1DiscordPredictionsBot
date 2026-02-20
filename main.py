@@ -183,6 +183,11 @@ async def on_ready():
         upsert_guild(guild.id, guild.name)
         #print(f"Synced guild {guild.name} ({guild.id})")
 
+    for guild in bot.guilds:
+        upsert_guild(guild.id, guild.name)
+        guild_default_lock(guild.id)
+        ensure_lock_rows(guild.id)
+
 
     '''for cmd in bot.tree.walk_commands():
         print(cmd.name)
