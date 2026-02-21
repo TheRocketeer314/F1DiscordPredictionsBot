@@ -16,7 +16,6 @@ def getaddrinfo_ipv4(*args, **kwargs):
 socket.getaddrinfo = getaddrinfo_ipv4
 
 DATABASE_URL = os.getenv('DATABASE_URL')
-#print (DATABASE_URL)
 try:
     conn = psycopg2.connect(DATABASE_URL)
     logger.info("Connected")

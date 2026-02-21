@@ -44,7 +44,6 @@ async def refresh_race_cache(now=None, year=None):
 
     if future_races.empty:
         return None  # no upcoming races
-    #print (future_races)
     next_race = future_races.iloc[0]
     cache_race = future_races.iloc[1] if len(future_races) > 1 else None
 
@@ -259,7 +258,7 @@ async def get_final_champions_if_ready(year=None):
         year = SEASON
 
     now = get_now()
-    print(f"CHAMPIONS: now={now}, year={year}")
+    logger.info("CHAMPIONS: now=%s, year=%s", now, year)
 
     # Get season calendar
     try:
@@ -270,24 +269,24 @@ async def get_final_champions_if_ready(year=None):
 
     last_race = calendar.iloc[-1]
     race_date = pd.to_datetime(last_race["Session5DateUtc"],utc=True,errors="coerce")
-    print(f"CHAMPIONS: last race={last_race['EventName']}, race_date={race_date}")
-    print(f"CHAMPIONS: threshold={race_date + timedelta(hours=12)}, passed={now >= race_date + timedelta(hours=12)}")
+    logger.info("CHAMPIONS: last race=%s, race_date=%s", last_race['EventName'], race_date)
+    logger.info("CHAMPIONS: threshold=%s, passed=%s", race_date + timedelta(hours=12), now >= race_date + timedelta(hours=12))
     if pd.isna(race_date):
-        print("CHAMPIONS: race_date is NaT, returning None")
+        logger.info("CHAMPIONS: race_date is NaT, returning None")
         return None
 
     # Check if 0.5 day has passed since last race
     if now < race_date + timedelta(hours = 12):
-        print("CHAMPIONS: not ready yet")
+        logger.info("CHAMPIONS: not ready yet")
         return None  # Not yet 0.5 day after last race
 
     try:
-        print("CHAMPIONS: fetching Ergast standings...")
+        logger.info("CHAMPIONS: fetching Ergast standings...")
         # Fetch standings from Ergast
         ergast = Ergast()
         driver_standings = ergast.get_driver_standings(season=year, round='last').content[0]
         constructor_standings = ergast.get_constructor_standings(season=year, round='last').content[0]
-        print(f"CHAMPIONS: WDC={driver_standings.iloc[0]['driverId']}, WCC={constructor_standings.iloc[0]['constructorId']}")
+        logger.info("CHAMPIONS: WDC=%s, WCC=%s", driver_standings.iloc[0]['driverId'], constructor_standings.iloc[0]['constructorId'])
         if driver_standings.empty or constructor_standings.empty:
             logger.warning("Standings returned empty for season %s", year)
             return None
