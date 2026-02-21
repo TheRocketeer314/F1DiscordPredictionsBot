@@ -6,7 +6,7 @@ import logging
 import shutil
 from FastF1_service import get_final_champions_if_ready, get_season_end_time
 from database import save_final_champions, update_leaderboard, safe_fetch_one, get_prediction_channel
-from scoring import score_final_champions, score_final_champions_for_guild
+from scoring import score_final_champions_for_guild
 from get_now import get_now, TIME_MULTIPLE, SEASON
 
 logger = logging.getLogger(__name__)

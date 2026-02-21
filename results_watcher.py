@@ -7,7 +7,7 @@ import traceback
 import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
 from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard, get_prediction_channel
-from scoring import score_race, score_race_for_guild
+from scoring import score_race_for_guild
 from get_now import get_now, TIME_MULTIPLE
 
 logger = logging.getLogger(__name__)
