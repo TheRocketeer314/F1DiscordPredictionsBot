@@ -3,9 +3,11 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 import os
+import logging
 import socket
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 #Force IPv4 
 orig_getaddrinfo = socket.getaddrinfo
@@ -17,250 +19,254 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 #print (DATABASE_URL)
 try:
     conn = psycopg2.connect(DATABASE_URL)
-    #print("Connected")
+    logger.info("Connected")
     cur = conn.cursor()
-    #cur.execute("SELECT current_database(), current_schema(), inet_server_addr()")
-    #print(cur.fetchone())
-except Exception as e:
-    print("Failed:", e)
+except Exception:
+    logger.exception("Database connection failed")
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
-'''conn = sqlite3.connect("predictionstest2.db")
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-def get_connection():
-    return sqlite3.connect("predictionstest2.db")'''
-
 db_lock = threading.Lock()
 
 def init_db():
-    #cur.execute("DROP TABLE IF EXISTS race_predictions")
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS race_predictions(
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS race_predictions(
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            username TEXT NOT NULL,
+            race_number INTEGER NOT NULL,
+            race_name TEXT NOT NULL,
+
+            pos1 TEXT,
+            pos2 TEXT,
+            pos3 TEXT,
+            pole TEXT,
+            fastest_lap TEXT,
+
+            constructor_winner TEXT,
+
+            sprint_winner TEXT,
+            sprint_pole TEXT,
+
+            PRIMARY KEY (guild_id, user_id, race_number)
+            );
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS prediction_state (
+                guild_id BIGINT NOT NULL PRIMARY KEY,
+                season_open BIGINT NOT NULL DEFAULT 0
+            );
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS season_predictions (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT NOT NULL,
+                wdc TEXT,
+                wcc TEXT,
+                    
+                PRIMARY KEY (guild_id, user_id)
+            );
+        """)
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS prediction_locks (
+        guild_id BIGINT NOT NULL,
+        type TEXT,
+        manual_override TEXT,
+                    
+        PRIMARY KEY (guild_id, type)
+        );
+    """)
+        
+        cur.execute("""CREATE TABLE IF NOT EXISTS race_results(
+                    race_number INTEGER PRIMARY KEY,
+                    race_name TEXT,
+                    pos1 TEXT,
+                    pos2 TEXT,
+                    pos3 TEXT,
+                    pole TEXT,
+                    quali_second TEXT,
+                    fastest_lap TEXT,
+                    constructor TEXT,
+                    sprint_winner TEXT,
+                    sprint_pole TEXT,
+                    is_sprint BOOLEAN DEFAULT FALSE)""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS race_scores (
         guild_id BIGINT NOT NULL,
         user_id BIGINT NOT NULL,
         username TEXT NOT NULL,
         race_number INTEGER NOT NULL,
-        race_name TEXT NOT NULL,
-
-        pos1 TEXT,
-        pos2 TEXT,
-        pos3 TEXT,
-        pole TEXT,
-        fastest_lap TEXT,
-
-        constructor_winner TEXT,
-
-        sprint_winner TEXT,
-        sprint_pole TEXT,
-
+        race_name TEXT,
+        points INTEGER,
         PRIMARY KEY (guild_id, user_id, race_number)
-        );
+    );
     """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_state (
-            guild_id BIGINT NOT NULL PRIMARY KEY,
-            season_open BIGINT NOT NULL DEFAULT 0
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS season_predictions (
-            guild_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            username TEXT NOT NULL,
+        
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS final_champions (
+            season INTEGER PRIMARY KEY NOT NULL,
             wdc TEXT,
-            wcc TEXT,
-                
-            PRIMARY KEY (guild_id, user_id)
+            wcc TEXT
         );
     """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS final_scores (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT,
+                username TEXT,
+                points INTEGER,
+                    
+                PRIMARY KEY (guild_id, user_id)
+            );
+        """)
 
-    cur.execute("""CREATE TABLE IF NOT EXISTS prediction_locks (
-    guild_id BIGINT NOT NULL,
-    type TEXT,
-    manual_override TEXT,
-                
-    PRIMARY KEY (guild_id, type)
-    );
-""")
-    
-    cur.execute("""CREATE TABLE IF NOT EXISTS race_results(
-                race_number INTEGER PRIMARY KEY,
-                race_name TEXT,
-                pos1 TEXT,
-                pos2 TEXT,
-                pos3 TEXT,
-                pole TEXT,
-                quali_second TEXT,
-                fastest_lap TEXT,
-                constructor TEXT,
-                sprint_winner TEXT,
-                sprint_pole TEXT,
-                is_sprint BOOLEAN DEFAULT FALSE)""")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS force_points_log (
+            id SERIAL PRIMARY KEY,
+            guild_id BIGINT NOT NULL,
+            userid BIGINT NOT NULL,
+            username TEXT NOT NULL,
+            points_given INTEGER NOT NULL,
+            reason TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
 
-    cur.execute("""CREATE TABLE IF NOT EXISTS race_scores (
-    guild_id BIGINT NOT NULL,
-    user_id BIGINT NOT NULL,
-    username TEXT NOT NULL,
-    race_number INTEGER NOT NULL,
-    race_name TEXT,
-    points INTEGER,
-    PRIMARY KEY (guild_id, user_id, race_number)
-);
-""")
-    
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS final_champions (
-        season INTEGER PRIMARY KEY NOT NULL,
-        wdc TEXT,
-        wcc TEXT
-    );
-""")
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS final_scores (
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS total_force_points (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT,
+            username TEXT NOT NULL,
+            points INTEGER DEFAULT 0,
+                    
+            PRIMARY KEY (guild_id, user_id)
+            );
+        """)
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS leaderboard (
             guild_id BIGINT NOT NULL,
             user_id BIGINT,
             username TEXT,
-            points INTEGER,
-                
+            total_points INTEGER,
+                    
             PRIMARY KEY (guild_id, user_id)
-        );
-    """)
+            );
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS force_points_log (
-        id SERIAL PRIMARY KEY,
-        guild_id BIGINT NOT NULL,
-        userid BIGINT NOT NULL,
-        username TEXT NOT NULL,
-        points_given INTEGER NOT NULL,
-        reason TEXT,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS crazy_predictions (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT NOT NULL,
+                season INT NOT NULL,
+                prediction TEXT NOT NULL,
+                timestamp TIMESTAMP NOT NULL
+            )
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS total_force_points (
-        guild_id BIGINT NOT NULL,
-        user_id BIGINT,
-        username TEXT NOT NULL,
-        points INTEGER DEFAULT 0,
-                
-        PRIMARY KEY (guild_id, user_id)
-        );
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bold_predictions (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                race_number INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                race_name TEXT NOT NULL,
+                prediction TEXT NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                PRIMARY KEY (guild_id, user_id, race_number)
+            )
+        """)
 
-    cur.execute("""CREATE TABLE IF NOT EXISTS leaderboard (
-        guild_id BIGINT NOT NULL,
-        user_id BIGINT,
-        username TEXT,
-        total_points INTEGER,
-                
-        PRIMARY KEY (guild_id, user_id)
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS crazy_predictions (
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS prediction_lock_log (
             id SERIAL PRIMARY KEY,
             guild_id BIGINT NOT NULL,
             user_id BIGINT NOT NULL,
             username TEXT NOT NULL,
-            season INT NOT NULL,
+            command TEXT NOT NULL,
             prediction TEXT NOT NULL,
-            timestamp TIMESTAMP NOT NULL
-        )
+            state TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
     """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bold_predictions (
-            guild_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            race_number INTEGER NOT NULL,
-            username TEXT NOT NULL,
-            race_name TEXT NOT NULL,
-            prediction TEXT NOT NULL,
-            timestamp TIMESTAMP NOT NULL,
-            PRIMARY KEY (guild_id, user_id, race_number)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_lock_log (
-        id SERIAL PRIMARY KEY,
+        
+        cur.execute("""CREATE TABLE IF NOT EXISTS persistent_messages (
         guild_id BIGINT NOT NULL,
-        user_id BIGINT NOT NULL,
-        username TEXT NOT NULL,
-        command TEXT NOT NULL,
-        prediction TEXT NOT NULL,
-        state TEXT NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-    
-    cur.execute("""CREATE TABLE IF NOT EXISTS persistent_messages (
-    guild_id BIGINT NOT NULL,
-    key TEXT,
-    channel_id BIGINT NOT NULL,
-    message_id BIGINT NOT NULL,
-                
-    PRIMARY KEY (guild_id, key)
-    )""")
+        key TEXT,
+        channel_id BIGINT NOT NULL,
+        message_id BIGINT NOT NULL,
+                    
+        PRIMARY KEY (guild_id, key)
+        )""")
 
-    cur.execute("""CREATE TABLE IF NOT EXISTS guild_config (
-    guild_id BIGINT PRIMARY KEY,
-    prediction_channel_id BIGINT NOT NULL
-);
-""")
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS guilds (
-                guild_id BIGINT PRIMARY KEY,
-                guild_name TEXT NOT NULL
-            );
-        """)
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def safe_execute(query, params=()):
-    """For writes: prevents concurrent write issues."""
-    with db_lock:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(query, params)
+        cur.execute("""CREATE TABLE IF NOT EXISTS guild_config (
+        guild_id BIGINT PRIMARY KEY,
+        prediction_channel_id BIGINT NOT NULL
+    );
+    """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS guilds (
+                    guild_id BIGINT PRIMARY KEY,
+                    guild_name TEXT NOT NULL
+                );
+            """)
+        
         conn.commit()
         cur.close()
         conn.close()
-    
+
+    except Exception:
+        logger.exception("Failed to initialize DB")
+
+def safe_execute(query, params=()):
+    """For writes: prevents concurrent write issues."""
+    try:
+        with db_lock:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(query, params)
+            conn.commit()
+            cur.close()
+            conn.close()
+    except Exception:
+        logger.exception("Failed to write to DB for params %s", params)
+
 def safe_fetch_all(query, params=()):
     """For reads: no lock needed."""
-    with db_lock:
-        conn = get_connection()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute(query, params)
-        result = cur.fetchall()
-        cur.close()
-        conn.close()
-        return result
+    try:
+        with db_lock:
+            conn = get_connection()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute(query, params)
+            result = cur.fetchall()
+            cur.close()
+            conn.close()
+            return result
+    except Exception:
+        logger.exception("Failed to fetch all from DB for params %s", params)
 
 def safe_fetch_one(query, params=()):
-    with db_lock:
-        conn = get_connection()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute(query, params)
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return result
+    try:
+        with db_lock:
+            conn = get_connection()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute(query, params)
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            return result
+    except Exception:
+        logger.exception("Failed to fetch one from DB for params %s", params)
 
 def upsert_guild(guild_id: int, guild_name: str):
         safe_execute("""
@@ -482,11 +488,6 @@ def update_leaderboard(guild_id):
             """, (guild_id, guild_id, guild_id))
             
             all_data = cur.fetchall()
-            #print("\n=== All data before grouping ===")
-            #for row in all_data:
-                #    print(f"user_id: {row[0]}, username: {row[1]}, points: {row[2]}, source: {row[3]}")
-            
-            # Now do the actual update (guild-specific)
             cur.execute(
                 "DELETE FROM leaderboard WHERE guild_id = %s;",
                 (guild_id,)
@@ -530,18 +531,15 @@ def update_leaderboard(guild_id):
             """, (guild_id,))
             
             results = cur.fetchall()
-            #print("\n=== Leaderboard after update ===")
             for row in results:
-                print(f"user_id: {row[0]}, username: {row[1]}, total_points: {row[2]}")
+                logger.info(f"user_id: {row[0]}, username: {row[1]}, total_points: {row[2]}")
             
             conn.commit()
             cur.close()
 
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            print("Error updating leaderboard:", e)
-            import traceback
-            traceback.print_exc()
+            logger.exception("update_leaderboard error")
         finally:
             conn.close()
 

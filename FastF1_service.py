@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 import fastf1
 from fastf1.ergast import Ergast
@@ -6,9 +7,14 @@ import pandas as pd
 from database import safe_fetch_one
 from get_now import get_now, SEASON
 
+logger = logging.getLogger(__name__)
+
 async def season_calender(season):
-    schedule = await asyncio.to_thread(fastf1.get_event_schedule, season)
-    return schedule['EventName'].tolist()
+    try:
+        schedule = await asyncio.to_thread(fastf1.get_event_schedule, season)
+        return schedule['EventName'].tolist()
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", season) 
 
         
 async def refresh_race_cache(now=None, year=None):
@@ -17,16 +23,21 @@ async def refresh_race_cache(now=None, year=None):
 
     if now is None:
         now = datetime.now(timezone.utc)
-    #print("Fetching F1 schedule...")
-    # Fetch schedule once
-    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    try:
+        schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    except Exception:
+        logger.exception("Failed to fetch F1 schedule for %s", year)
+        return None
 
-    #print("Schedule fetched!")
-
-    # Convert only the columns we need to UTC-aware datetime
-    date_cols = ["Session1DateUtc", "Session2DateUtc", "Session4DateUtc", "Session5DateUtc"]
-    for col in date_cols:
-        schedule[col] = pd.to_datetime(schedule[col], utc=True, errors='coerce')#.dt.to_pydatetime()
+    try:
+        # Convert dates
+        date_cols = ["Session1DateUtc","Session2DateUtc","Session4DateUtc","Session5DateUtc"]
+        for col in date_cols:
+            schedule[col] = pd.to_datetime(schedule[col], utc=True, errors='coerce')
+    except Exception:
+        logger.exception("Failed processing schedule dates for %s", year)
+        return None    
+    
     # Keep only future races
     future_races = schedule[schedule['Session5DateUtc'].notna() & 
                             (schedule['Session5DateUtc'] > now)]
@@ -87,8 +98,11 @@ async def race_results(year=None):
     if year is None:
         year = SEASON
 
-    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
-
+    try:
+        schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", year)
+        return None
 
     # FORCE UTC-awareness
     schedule["Session5DateUtc"] = pd.to_datetime(
@@ -115,11 +129,21 @@ async def race_results(year=None):
     race_end += timedelta(hours=6)
     if now < race_end:
         return None # Too early
-    # Race session
-    race_session = fastf1.get_session(year, finished_race, "Race")
-    race_session.load(laps=True, telemetry=False, weather=False, messages=False)
     
-    race_results = race_session.results
+    race_results = pd.DataFrame()  # init before the try
+    quali_results = pd.DataFrame() 
+
+    try:
+        # Race session
+        race_session = fastf1.get_session(year, finished_race, "Race")
+        race_session.load(laps=True, telemetry=False, weather=False, messages=False)
+        race_results = race_session.results
+        if race_results.empty:
+            logger.warning("Race results are empty for %s", finished_race)
+
+    except Exception:
+        logger.exception("Error when fetching race results for %s", finished_race)
+
     if race_results.empty:
         return None
     pos1 = race_results.iloc[0]["Abbreviation"]
@@ -129,11 +153,16 @@ async def race_results(year=None):
     constructor_points = race_results.groupby("TeamName")["Points"].sum()
     winning_constructor = constructor_points.idxmax()
 
-    # Qualifying session
-    quali_session = fastf1.get_session(year,finished_race, "Qualifying")
-    quali_session.load(laps=False, telemetry=False, weather=False, messages=False)
-    quali_results = quali_session.results
+    try:
+        # Qualifying session
+        quali_session = fastf1.get_session(year, finished_race, "Qualifying")
+        quali_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        quali_results = quali_session.results
+        if quali_results.empty:
+            logger.warning("Quali results are empty for %s", finished_race)
 
+    except Exception:
+        logger.exception("Failed to get quali results for %s", finished_race)
     
     pole = quali_results.iloc[0]["Abbreviation"] if not quali_results.empty else None
     quali_second = quali_results.iloc[1]["Abbreviation"] if not quali_results.empty else None
@@ -155,7 +184,11 @@ async def sprint_results(year=None):
     if year is None:
         year = SEASON
 
-    schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    try:
+        schedule = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", year)
+        return None
 
     # Get timing of the next Quali session
     schedule["Session5DateUtc"] = pd.to_datetime(
@@ -184,17 +217,32 @@ async def sprint_results(year=None):
         return None
     if  now < race_end:
         return None # Too early
-    # Race session
-    sprint_session = fastf1.get_session(year, finished_race, "Sprint")
-    sprint_session.load(laps=False, telemetry=False, weather=False, messages=False)
-    sprint_results = sprint_session.results
+    
+    sprint_results = pd.DataFrame()  # init before the try
+    sprintquali_results = pd.DataFrame() 
+
+    try:
+    # Sprint session
+        sprint_session = fastf1.get_session(year, finished_race, "Sprint")
+        sprint_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        sprint_results = sprint_session.results
+        if sprint_results.empty:
+            logger.warning("Sprint results are empty for %s", finished_race)
+
+    except Exception:
+        logger.exception("Failed to load Sprint results for %s", finished_race)
 
     sprint_winner = sprint_results.iloc[0]["Abbreviation"]
 
-    # Qualifying session
-    sprintquali_session = fastf1.get_session(year, finished_race, "Sprint Qualifying")
-    sprintquali_session.load(laps=False, telemetry=False, weather=False, messages=False)
-    sprintquali_results = sprintquali_session.results
+    try:
+        # Sprint Qualifying session
+        sprintquali_session = fastf1.get_session(year, finished_race, "Sprint Qualifying")
+        sprintquali_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        sprintquali_results = sprintquali_session.results
+        if sprintquali_results.empty:
+            logger.warning("Sprint Quali results are empty for %s", finished_race)
+    except Exception:
+        logger.exception("Failed to load Sprint Quali for %s", finished_race)
 
     sprint_pole = sprintquali_results.iloc[0]["Abbreviation"] if not sprintquali_results.empty else None
 
@@ -212,13 +260,12 @@ async def get_final_champions_if_ready(year=None):
 
     now = get_now()
 
-    """
-    Checks if the current time is at least 1 day after the last race of the season.
-    If yes, fetches WDC and WCC winners from Ergast and returns them.
-    Returns (WDC_winner, WCC_winner) or None if not ready.
-    """
     # Get season calendar
-    calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    try:
+        calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", year)
+        return None
 
     last_race = calendar.iloc[-1]
     race_date = pd.to_datetime(last_race["Session5DateUtc"],utc=True,errors="coerce")
@@ -230,20 +277,34 @@ async def get_final_champions_if_ready(year=None):
     if now < race_date + timedelta(hours = 12):
         return None  # Not yet 0.5 day after last race
 
-    # Fetch standings from Ergast
-    ergast = Ergast()
-    driver_standings = ergast.get_driver_standings(season=year, round='last').content[0]
-    constructor_standings = ergast.get_constructor_standings(season=year, round='last').content[0]
+    try:
+        # Fetch standings from Ergast
+        ergast = Ergast()
+        driver_standings = ergast.get_driver_standings(season=year, round='last').content[0]
+        constructor_standings = ergast.get_constructor_standings(season=year, round='last').content[0]
+        if driver_standings.empty or constructor_standings.empty:
+            logger.warning("Standings returned empty for season %s", year)
+            return None
+    except Exception:
+        logger.exception("Failed to load standings for %s", year)
+        return None
+    
+    if driver_standings and constructor_standings:
+        # Winners are first in the list
+        wdc_winner = driver_standings.iloc[0]['driverId']
+        wcc_winner = constructor_standings.iloc[0]['constructorId']
 
-    # Winners are first in the list
-    wdc_winner = driver_standings.iloc[0]['driverId']
-    wcc_winner = constructor_standings.iloc[0]['constructorId']
-
-    return wdc_winner, wcc_winner
+        return wdc_winner, wcc_winner
+    else:
+        return None
 
 async def get_race_end_time(now):
     """Get the end time of the next unscored race."""
-    schedule = await asyncio.to_thread(fastf1.get_event_schedule, SEASON)
+    try:
+        schedule = await asyncio.to_thread(fastf1.get_event_schedule, SEASON)
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", SEASON)
+        return None
 
     
     schedule["Session5DateUtc"] = pd.to_datetime(
@@ -290,7 +351,11 @@ async def get_season_end_time(year=None):
     if year is None:
         year = SEASON
 
-    calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    try:
+        calendar = await asyncio.to_thread(fastf1.get_event_schedule, year)
+    except Exception:
+        logger.exception("Failed to fetch season calendar for %s", year)
+        return None
 
     last_race = calendar.iloc[-1]
 
@@ -305,15 +370,3 @@ async def get_season_end_time(year=None):
 
     season_end_time = race_start + timedelta(hours=12)
     return season_end_time.to_pydatetime()
-
-
-'''# Check and print final champions
-result = get_final_champions_if_ready()
-if result:
-    wdc_winner, wcc_winner = result
-    print(f"Final WDC Winner: {wdc_winner}")
-    print(f"Final WCC Winner: {wcc_winner}")
-else:
-    print("Not yet 1 day after the last race, final standings not available.")'''
-
-

@@ -2,12 +2,14 @@
 import asyncio
 import fastf1
 from config import CACHE_DIR
-import os
+import logging
 import shutil
 from FastF1_service import get_final_champions_if_ready, get_season_end_time
 from database import save_final_champions, update_leaderboard, safe_fetch_one, get_prediction_channel
 from scoring import score_final_champions, score_final_champions_for_guild
 from get_now import get_now, TIME_MULTIPLE, SEASON
+
+logger = logging.getLogger(__name__)
 
 async def final_champions_loop(bot):
     await bot.wait_until_ready()
@@ -22,7 +24,12 @@ async def final_champions_loop(bot):
 
     # One or two guarded attempts (data lag protection)
     for _ in range(2):
-        result = await get_final_champions_if_ready()
+        try:
+            result = await get_final_champions_if_ready()
+        except Exception:
+            logger.exception("Failed fetching final champions")
+            await asyncio.sleep(3600)
+            continue
 
         if result:
             wdc_winner, wcc_winner = result
@@ -38,33 +45,38 @@ async def final_champions_loop(bot):
 
             # Score per guild (like race loop)
             for guild in bot.guilds:
-                guild_id = guild.id
+                try:
+                    guild_id = guild.id
 
-                # Prevent double scoring
-                existing_scores = safe_fetch_one(
-                    "SELECT 1 FROM final_scores WHERE guild_id = %s LIMIT 1",
-                    (guild_id,)
-                )
-
-                if existing_scores:
-                    print(f"Final champions already scored for guild {guild.name}")
-                    continue
-
-                print(f"Scoring final champions for guild {guild.name}...")
-                score_final_champions_for_guild(guild_id)
-                update_leaderboard(guild_id)
-                channel_id = get_prediction_channel(guild_id)
-                if channel_id:
-                    channel = guild.get_channel(channel_id)
-                    if channel:
-                        await channel.send(
-                        f"✅ **The {season} Formula 1 season has ended!**\n"
-                        f"👑 The {season} F1 WDC- {wdc_winner.title()}\n"
-                        f"🏎️ The {season} F1 WCC- {wcc_winner.title()}\n" 
-                        "Championship predictions have been scored!"
+                    # Prevent double scoring
+                    existing_scores = safe_fetch_one(
+                        "SELECT 1 FROM final_scores WHERE guild_id = %s LIMIT 1",
+                        (guild_id,)
                     )
 
-                print(f"Final champions scored for guild {guild.name}")
+                    if existing_scores:
+                        logger.info(f"Final champions already scored for guild {guild.name}")
+                        continue
+
+                    logger.info(f"Scoring final champions for guild {guild.name}...")
+                    score_final_champions_for_guild(guild_id)
+                    update_leaderboard(guild_id)
+                    channel_id = get_prediction_channel(guild_id)
+                    if channel_id:
+                        channel = guild.get_channel(channel_id)
+                        if channel:
+                            await channel.send(
+                            f"✅ **The {season} Formula 1 season has ended!**\n"
+                            f"👑 The {season} F1 WDC- {wdc_winner.title()}\n"
+                            f"🏎️ The {season} F1 WCC- {wcc_winner.title()}\n" 
+                            "Championship predictions have been scored!"
+                        )
+
+                    logger.info(f"Final champions scored for guild {guild.name}")
+
+                except Exception:
+                    logger.exception("Failed scoring guild %s", guild.id)
+                    continue
 
             return
 

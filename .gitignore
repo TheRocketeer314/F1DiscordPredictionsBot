@@ -13,6 +13,7 @@ __pycache__/
 # Logs
 *.log
 discord.log
+bot.log
 
 # FastF1 cache
 fastf1cache/

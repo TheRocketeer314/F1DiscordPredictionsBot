@@ -2,12 +2,15 @@
 import asyncio
 import fastf1
 from config import CACHE_DIR
-import os
+import logging
+import traceback
 import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
 from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard, get_prediction_channel
 from scoring import score_race, score_race_for_guild
 from get_now import get_now, TIME_MULTIPLE
+
+logger = logging.getLogger(__name__)
 
 async def poll_results_loop(bot):
     await bot.wait_until_ready()
@@ -17,19 +20,19 @@ async def poll_results_loop(bot):
         try:
             race_end_time = await get_race_end_time(get_now())
             if race_end_time is None:
-                print("No upcoming races found, season may be over. Waiting 24 hours...")
+                logger.info("No upcoming races found, season may be over. Waiting 24 hours...")
                 await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
                 continue
 
             delay = (race_end_time - get_now()).total_seconds()
 
             while delay > 0:
-                print(f"Waiting {delay/3600/TIME_MULTIPLE:.2f} hours until next race ends...")
+                logger.info(f"Waiting {delay/3600/TIME_MULTIPLE:.2f} hours until next race ends...")
                 await asyncio.sleep(min(delay / TIME_MULTIPLE, 600 / TIME_MULTIPLE))
                 race_end_time = await get_race_end_time(get_now())
                 delay = (race_end_time - get_now()).total_seconds()
 
-            print("Race has ended, fetching results...")
+            logger.info("Race has ended, fetching results...")
             race_data = await race_results()
             if not race_data:
                 await asyncio.sleep(60 * 60 / TIME_MULTIPLE)
@@ -56,13 +59,21 @@ async def poll_results_loop(bot):
                     (race_num, guild_id)
                 )
                 if existing_scores:
-                    print(f"Race {race_num} already scored for guild {guild.name}")
+                    logger.info(f"Race {race_num} already scored for guild {guild.name}")
                     continue
+                
+                logger.info(
+                    "race_num=%s | guild_id=%s | existing_scores=%s | scoring race %s for guild %s",
+                    race_num,
+                    guild_id,
+                    existing_scores,
+                    race_num,
+                    guild.name,
+                )
 
-                print(f"Scoring race {race_num} for guild {guild.name}...")
                 score_race_for_guild(race_num, guild_id)  
                 update_leaderboard(guild_id)
-                print(f"Race {race_num} scored and leaderboard updated for guild {guild.name}")
+                logger.info(f"Race {race_num} scored and leaderboard updated for guild {guild.name}")
 
                 channel_id = get_prediction_channel(guild_id)
                 if channel_id:
@@ -75,11 +86,9 @@ async def poll_results_loop(bot):
                         f"🏗️ Constructor: {race_data['winning_constructor']}"
                     )
 
-            print("Sleeping 24 hours before checking for next race...")
+            logger.info("Sleeping 24 hours before checking for next race...")
             await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
 
-        except Exception as e:
-            print(f"Error in poll_results_loop: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception :
+            logger.exception("pole_results_loop crashed")
             await asyncio.sleep(60 * 60 / TIME_MULTIPLE)

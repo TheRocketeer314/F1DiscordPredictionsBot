@@ -33,12 +33,27 @@ from database import (init_db, save_race_predictions,
                       get_prediction_channel,
                       guild_default_lock,
                       ensure_lock_rows,
-                      upsert_guild)
+                      upsert_guild,
+                      get_persistent_message,
+                      save_persistent_message)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
 from get_now import get_now, TIME_MULTIPLE, SEASON
 from keep_alive import keep_alive
+import logging
+
+try:
+    logging.basicConfig(
+        level=logging.INFO,  # DEBUG when developing
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        filename="bot.log",
+        filemode="a"
+    )
+except Exception as e:
+    print("Logging couldn't initialize, error:", e)
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -85,13 +100,20 @@ async def race_cache_watcher():
 
         if delay <= 0:
             # Missed it or startup case
-            new_cache = await refresh_race_cache(now)
-            if new_cache:
-                RACE_CACHE.clear()
-                RACE_CACHE.update(new_cache)
+            try:
+                new_cache = await refresh_race_cache(now)
+                if new_cache:
+                    RACE_CACHE.clear()
+                    RACE_CACHE.update(new_cache)
 
-            for guild in bot.guilds:
-                reset_locks_on_cache_refresh(guild.id)
+                for guild in bot.guilds:
+                    try:
+                        reset_locks_on_cache_refresh(guild.id)
+                    except Exception:
+                        logger.exception("Failed to reset locks for guild %s", guild.id)
+
+            except Exception:
+                logger.exception("Error in race_cache_watcher main loop.")
 
             await asyncio.sleep(60/TIME_MULTIPLE)
             continue
@@ -102,14 +124,20 @@ async def race_cache_watcher():
             return  # task cancelled on shutdown or restart
 
         # Time reached
-        new_cache = await refresh_race_cache(now)
-        if new_cache:
-            RACE_CACHE.clear()
-            RACE_CACHE.update(new_cache)
+        try:
+            new_cache = await refresh_race_cache(now)
+            if new_cache:
+                RACE_CACHE.clear()
+                RACE_CACHE.update(new_cache)
 
-        for guild in bot.guilds:
-            reset_locks_on_cache_refresh(guild.id)
-
+            for guild in bot.guilds:
+                try:
+                    reset_locks_on_cache_refresh(guild.id)
+                except Exception:
+                    logger.exception("Failed to reset locks for guild %s", guild.id)
+            
+        except Exception:
+            logger.exception("Error in race_cache_watcher main loop.")
 
 # Function to check if predictions are open
 def predictions_open(guild_id, now: datetime, RACE_CACHE) -> bool:
@@ -159,10 +187,9 @@ async def on_ready():
     initial = await refresh_race_cache(get_now())
     if initial:
         RACE_CACHE.update(initial)
-    print("Bot is ready.")
+    logger.info("Bot is ready.")
     SEASON_CALENDER = await season_calender(SEASON)
 
-    #print(lock_time,type(lock_time) )
     if getattr(bot, "cache_task_started", False):
         return # Prevent multiple tasks
     
@@ -177,52 +204,41 @@ async def on_ready():
 
     if not bold_predictions_publisher.is_running():
         bold_predictions_publisher.start()
-        print("Bold loop started")
-
-    for guild in bot.guilds:
-        upsert_guild(guild.id, guild.name)
-        #print(f"Synced guild {guild.name} ({guild.id})")
+        logger.info("Bold loop started")
 
     for guild in bot.guilds:
         upsert_guild(guild.id, guild.name)
         guild_default_lock(guild.id)
         ensure_lock_rows(guild.id)
 
-
-    '''for cmd in bot.tree.walk_commands():
-        print(cmd.name)
-    print(race_name, type(race_name), int(RACE_CACHE.get("race_number")), type(race_number))'''
-
-
 @bot.tree.error
-async def on_app_command_error(
-    interaction: discord.Interaction,
-    error: discord.app_commands.AppCommandError
-):
-    print(f"Command error: {error}")
-    import traceback
-    traceback.print_exc()
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    try:
+        logger.exception("Command error: %s", error)
 
-    if interaction.response.is_done():
-        await interaction.followup.send(
-            f"❌ Error: {error}",
-            ephemeral=True
-        )
-    else:
-        await interaction.response.send_message(
-            f"❌ Error: {error}",
-            ephemeral=True
-        )
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                f"❌ Error: {error}",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"❌ Error: {error}",
+                ephemeral=True
+            )
+    except Exception:
+        logger.exception("Failed to send error message for command error")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     guild_id = guild.id
-    print(f"Joined new guild: {guild.name} ({guild_id})")
+    logger.info(f"Joined new guild: {guild.name} ({guild_id})")
 
     guild_name = guild.name
 
     # Adds Guild to Guild Table
     upsert_guild(guild.id, guild_name)
+
     # Set up default season state
     guild_default_lock(guild_id)
 
@@ -277,63 +293,68 @@ class PredictionSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):  # <-- indented inside class
-        await interaction.response.defer(ephemeral=True)
-        now = get_now()
+        try:
+            await interaction.response.defer(ephemeral=True)
+            now = get_now()
 
-        if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-            self.view.disable_all()
-            await interaction.edit_original_response(
-                content="🔒 Predictions are closed.",
-                view=self.view
-            )
-            return
-
-        guild_id = interaction.guild.id
-        race_number = int(RACE_CACHE.get("race_number"))
-        user_id = interaction.user.id
-        preds = user_predictions[guild_id][race_number][user_id]
-
-        selected_driver = self.values[0]
-        previous = preds[self.index]
-
-        if self.index < 3:
-            other_selected = {v for i, v in enumerate(preds[:3]) if v and i != self.index}
-            if selected_driver in other_selected and selected_driver != previous:
-                await interaction.followup.send(
-                    f"❌ {selected_driver} already selected for Positions 1-3. Pick a different driver!",
-                    ephemeral=True
+            if not predictions_open(interaction.guild.id, now, RACE_CACHE):
+                self.view.disable_all()
+                await interaction.edit_original_response(
+                    content="🔒 Predictions are closed.",
+                    view=self.view
                 )
                 return
 
+            guild_id = interaction.guild.id
+            race_number = int(RACE_CACHE.get("race_number"))
+            user_id = interaction.user.id
+            preds = user_predictions[guild_id][race_number][user_id]
+
+            selected_driver = self.values[0]
+            previous = preds[self.index]
+
+            if self.index < 3:
+                other_selected = {v for i, v in enumerate(preds[:3]) if v and i != self.index}
+                if selected_driver in other_selected and selected_driver != previous:
+                    await interaction.followup.send(
+                        f"❌ {selected_driver} already selected for Positions 1-3. Pick a different driver!",
+                        ephemeral=True
+                    )
+                    return
+
+                preds[self.index] = selected_driver
+                save_race_predictions(
+                    guild_id, user_id, interaction.user.name,
+                    race_number, RACE_CACHE.get("race_name"), preds
+                )
+
+                taken = {v for v in preds[:3] if v}
+
+                for child in list(self.view.children):
+                    if isinstance(child, PredictionSelect) and child.index < 3:
+                        curr = preds[child.index]
+                        new_options = []
+                        for d in DRIVERS:
+                            if d not in taken or d == curr:
+                                new_options.append(
+                                    discord.SelectOption(label=d, value=d, default=(d == curr))
+                                )
+                        child.options = new_options
+
+                # Fix: use edit_original_response instead of followup.edit_message
+                await interaction.edit_original_response(view=self.view)
+                return
+
+            # Positions 3 and 4 (Fastest Lap / Pole) — duplicates allowed
             preds[self.index] = selected_driver
             save_race_predictions(
                 guild_id, user_id, interaction.user.name,
                 race_number, RACE_CACHE.get("race_name"), preds
             )
 
-            taken = {v for v in preds[:3] if v}
+        except Exception:
+            logger.exception("PredictionSelect error")
 
-            for child in list(self.view.children):
-                if isinstance(child, PredictionSelect) and child.index < 3:
-                    curr = preds[child.index]
-                    new_options = []
-                    for d in DRIVERS:
-                        if d not in taken or d == curr:
-                            new_options.append(
-                                discord.SelectOption(label=d, value=d, default=(d == curr))
-                            )
-                    child.options = new_options
-
-            # Fix: use edit_original_response instead of followup.edit_message
-            await interaction.edit_original_response(view=self.view)
-            return
-
-        # Positions 3 and 4 (Fastest Lap / Pole) — duplicates allowed
-        preds[self.index] = selected_driver
-        save_race_predictions(
-            guild_id, user_id, interaction.user.name,
-            race_number, RACE_CACHE.get("race_name"), preds
-        )
 class PredictionView(discord.ui.View):
     def __init__(self, guild_id, user_id=None):
         super().__init__(timeout=300)
@@ -361,11 +382,11 @@ async def predict(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(
-            f"Make your predictions for the {RACE_CACHE.get("race_name")}:",
+            f"Make your predictions for the {RACE_CACHE.get('race_name')}:",
             view=PredictionView(interaction.guild.id, interaction.user.id),
             ephemeral=True)
-    except Exception as e:
-        print(e)
+    except Exception:
+        logger.exception("Race prediction error")
 
 class SprintPredictionView(discord.ui.View):
     def __init__(self):
@@ -392,8 +413,11 @@ class SprintWinnerSelect(discord.ui.Select):
             max_values=1,)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        self.view2.sprint_winner = self.values[0]
+        try:
+            await interaction.response.defer(ephemeral=True)
+            self.view2.sprint_winner = self.values[0]
+        except Exception:
+            logger.exception("SprintWinner error")
 
 class SprintPoleSelect(discord.ui.Select):
     def __init__(self, view2: SprintPredictionView):
@@ -406,8 +430,11 @@ class SprintPoleSelect(discord.ui.Select):
             max_values=1,)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        self.view2.sprint_pole = self.values[0]
+        try:
+            await interaction.response.defer(ephemeral=True)
+            self.view2.sprint_pole = self.values[0]
+        except Exception:
+            logger.exception("SprintPole error")
 
 class SprintSubmitButton(discord.ui.Button):
     def __init__(self, view2: SprintPredictionView):
@@ -415,60 +442,63 @@ class SprintSubmitButton(discord.ui.Button):
         super().__init__(label="Submit Sprint Predictions", style=discord.ButtonStyle.green)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        #print("Sprint Submit clicked:", self.view2.sprint_winner, self.view2.sprint_pole, int(RACE_CACHE.get("race_number")), RACE_CACHE.get("race_name"), sprint_lock_time)
+        try:
+            await interaction.response.defer(ephemeral=True)
 
-        now = get_now()
+            now = get_now()
 
-        if not sprint_predictions_open(
-            interaction.guild.id,
-            now,
-            RACE_CACHE
-           ):
+            if not sprint_predictions_open(
+                interaction.guild.id,
+                now,
+                RACE_CACHE
+            ):
+                await interaction.followup.send(
+                    "Sprint predictions are closed.",
+                    ephemeral=True)
+                return
+            
+            if not self.view2.sprint_winner or not self.view2.sprint_pole:
+                await interaction.followup.send(
+                    "Please fill all sprint predictions",
+                    ephemeral=True)
+                return
+            
+            user_id = interaction.user.id
+            sprint_predictions[user_id] = {
+                "User_ID": interaction.user.id,
+                "Sprint_Winner": self.view2.sprint_winner,
+                "Sprint_Pole": self.view2.sprint_pole,
+            }
+
+            save_sprint_predictions(
+                interaction.guild.id,
+                interaction.user.id,
+                interaction.user.name,
+                int(RACE_CACHE.get("race_number")),
+                RACE_CACHE.get("race_name"),
+                self.view2.sprint_winner,
+                self.view2.sprint_pole
+    )
+
+
             await interaction.followup.send(
-                "Sprint predictions are closed.",
+                "✅ Your sprint predictions have been recorded.",
                 ephemeral=True)
-            return
-        
-        if not self.view2.sprint_winner or not self.view2.sprint_pole:
-            await interaction.followup.send(
-                "Please fill all sprint predictions",
-                ephemeral=True)
-            return
-        
-        user_id = interaction.user.id
-        sprint_predictions[user_id] = {
-            "User_ID": interaction.user.id,
-            "Sprint_Winner": self.view2.sprint_winner,
-            "Sprint_Pole": self.view2.sprint_pole,
-        }
-
-        save_sprint_predictions(
-            interaction.guild.id,
-            interaction.user.id,
-            interaction.user.name,
-            int(RACE_CACHE.get("race_number")),
-            RACE_CACHE.get("race_name"),
-            self.view2.sprint_winner,
-            self.view2.sprint_pole
-)
-
-
-        await interaction.followup.send(
-            "✅ Your sprint predictions have been recorded.",
-              ephemeral=True)
-        
-        self.view2.stop()
+            
+            self.view2.stop()
+        except Exception:
+            logger.exception("SprintSubmit error")
 
 @bot.tree.command(name="sprint_predict", description="Make your sprint predictions")
 async def sprint_predict(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(f"Make your sprint predictions for the {RACE_CACHE.get("race_name")} Sprint:",
+        await interaction.followup.send(f"Make your sprint predictions for the {RACE_CACHE.get('race_name')} Sprint:",
                                              view=SprintPredictionView(),
                                              ephemeral=True)
-    except Exception as e:
-        print(e)
+    except Exception:
+        logger.exception("Sprint prediction error")
+
     
 #Force Points
 @bot.tree.command(name="force_points", description="Give points to a user(MODS ONLY)")
@@ -486,34 +516,41 @@ async def force_points(
         reason: str | None = None
 ):
 
-    
-    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
 
-    if user == interaction.client.user:
-        await interaction.followup.send("❌ Cannot award points to the bot.", ephemeral=True)
-        return
-    
-    await interaction.followup.send(f"Awarded {user.mention} {points} points", 
-                                    ephemeral=True)
-    
-    add_points(interaction.guild.id, user.id, str(user), points, reason)
-    
-    if reason:
-        message = f"**{user.mention} received {points} points** for *{reason}*."
-    else:
-        message = f"**{user.mention} received {points} points.**"   
+        if user == interaction.client.user:
+            await interaction.followup.send("❌ Cannot award points to the bot.", ephemeral=True)
+            return
+        
+        await interaction.followup.send(f"Awarded {user.mention} {points} points", 
+                                        ephemeral=True)
+        
+        add_points(interaction.guild.id, user.id, str(user), points, reason)
+        
+        if reason:
+            message = f"**{user.mention} received {points} points** for *{reason}*."
+        else:
+            message = f"**{user.mention} received {points} points.**"   
 
-    #Send Permanent Message
-    await interaction.channel.send(message)
+        #Send Permanent Message
+        await interaction.channel.send(message)
+
+    except Exception:
+        logger.exception("Force points error")
+
 
 @force_points.error
 async def force_points_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(
-            "You don't have permission to use this command.",
-            ephemeral=True
-        )
+    try:
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(
+                "You don't have permission to use this command.",
+                ephemeral=True
+            )
+    except Exception:
+        logger.exception("force_points_error error")
 
 #Constructors Predict
 async def constructor_autocomplete(interaction: discord.Interaction, current: str):
@@ -524,41 +561,43 @@ async def constructor_autocomplete(interaction: discord.Interaction, current: st
             for cons in CONSTRUCTORS
             if current.lower() in str(cons).lower()
         ][:25]
-    except Exception as e:
-        print("Autocomplete ERROR", e)
-        return[]
+    except Exception:
+        logger.exception("Constructor autocomplete error")
 
 async def constructor_prediction(interaction: discord.Interaction, constructor: str):
-    await interaction.response.defer(ephemeral=True)
-    now = get_now()
+    try:
+        await interaction.response.defer(ephemeral=True)
+        now = get_now()
 
-    # Use your existing function to check if predictions are open
-    if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-        try:
-            await interaction.followup.send(
-            "⛔ Predictions are closed.",
+        # Use your existing function to check if predictions are open
+        if not predictions_open(interaction.guild.id, now, RACE_CACHE):
+            try:
+                await interaction.followup.send(
+                "⛔ Predictions are closed.",
+                ephemeral=True
+            )
+            except Exception:
+                logger.exception("Constructor prediction error")
+            return
+
+        # Save prediction (overwrite if user already submitted)
+        save_constructor_prediction(
+            interaction.guild.id,
+            interaction.user.id,
+            interaction.user.name,
+            int(RACE_CACHE.get("race_number")),
+            RACE_CACHE.get("race_name"),
+            constructor
+    )
+
+
+        await interaction.followup.send(
+            f"✅ {interaction.user.mention}, your prediction for the winning constructor is **{constructor}**.",
             ephemeral=True
         )
-        except Exception as e:
-            print(e)
 
-        return
-
-    # Save prediction (overwrite if user already submitted)
-    save_constructor_prediction(
-        interaction.guild.id,
-        interaction.user.id,
-        interaction.user.name,
-        int(RACE_CACHE.get("race_number")),
-        RACE_CACHE.get("race_name"),
-        constructor
-)
-
-
-    await interaction.followup.send(
-        f"✅ {interaction.user.mention}, your prediction for the winning constructor is **{constructor}**.",
-        ephemeral=True
-    )
+    except Exception:
+        logger.exception("Constructor prediction error")
 
 @bot.tree.command(name="constructor_predict", description="Predict the winning constructor")
 @app_commands.describe(constructor=f"Select your most-scoring constructor")
@@ -584,26 +623,31 @@ async def pred_lock(
     prediction: app_commands.Choice[str],
     state: app_commands.Choice[str]
 ):
-    await interaction.response.defer(ephemeral=False)
-    if state.value == "AUTO":
-        set_manual_lock(interaction.guild.id, prediction.value,  None)
-        msg = f"⚙️ **{prediction.name} predictions set to AUTO mode.**"
-    else:
-        set_manual_lock(interaction.guild.id, prediction.value, state.value)
-        emoji = "🔒" if state.value == "LOCKED" else "🔓"
-        msg = f"{emoji} **{prediction.name} predictions manually {state.name.upper()}.**"
+    try:
+        await interaction.response.defer(ephemeral=False)
+        if state.value == "AUTO":
+            set_manual_lock(interaction.guild.id, prediction.value,  None)
+            msg = f"⚙️ **{prediction.name} predictions set to AUTO mode.**"
+        else:
+            set_manual_lock(interaction.guild.id, prediction.value, state.value)
+            emoji = "🔒" if state.value == "LOCKED" else "🔓"
+            msg = f"{emoji} **{prediction.name} predictions manually {state.name.upper()}.**"
 
-    await interaction.channel.send(msg)
-    await interaction.followup.send("Done.", ephemeral=True)
+        await interaction.channel.send(msg)
+        await interaction.followup.send("Done.", ephemeral=True)
 
-    prediction_state_log(
-        interaction.guild.id,
-        str(interaction.user.id),
-        str(interaction.user),
-        "pred_lock",
-        prediction.value,
-        state.value
-    )
+        prediction_state_log(
+            interaction.guild.id,
+            str(interaction.user.id),
+            str(interaction.user),
+            "pred_lock",
+            prediction.value,
+            state.value
+        )
+
+    except Exception:
+        logger.exception("Prediction lock error")
+
 
 class SeasonPredictionView(discord.ui.View):
     def __init__(self):
@@ -681,10 +725,8 @@ class SeasonSubmitButton(discord.ui.Button):
                 ephemeral=True
             )
 
-        except Exception as e:
-            print("ERROR:", e)
-            raise
-
+        except Exception:
+            logger.exception("Season submit error")
 
 @bot.tree.command(name="season_predict", description="Predict the WDC & WCC")
 async def season(interaction: discord.Interaction):
@@ -696,66 +738,77 @@ async def season(interaction: discord.Interaction):
         view=SeasonPredictionView(),
         ephemeral=True
     )
-    except Exception as e:
-        interaction.followup.send(e)
+    except Exception:
+        logger.exception("Season prediction error")
+
 
 @bot.tree.command(name="season_lock", description="Lock season predictions (MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_lock(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    set_season_state(interaction.guild.id, False)
-    await interaction.channel.send("🔒 **Season predictions are now LOCKED.**")
-    await interaction.followup.send("Done.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+        set_season_state(interaction.guild.id, False)
+        await interaction.channel.send("🔒 **Season predictions are now LOCKED.**")
+        await interaction.followup.send("Done.", ephemeral=True)
 
-    prediction_state_log(
-        interaction.guild.id,
-        str(interaction.user.id),
-        str(interaction.user),
-        "season_lock",
-        prediction="season",
-        state="LOCKED"
-    )
+        prediction_state_log(
+            interaction.guild.id,
+            str(interaction.user.id),
+            str(interaction.user),
+            "season_lock",
+            prediction="season",
+            state="LOCKED"
+        )
 
-
+    except Exception:
+        logger.exception("Season lock error")
 
 @bot.tree.command(name="season_unlock", description="Unlock season predictions (MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def season_unlock(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    set_season_state(interaction.guild.id, True)
-    await interaction.channel.send("🔓 **Season predictions are now OPEN.**")
-    await interaction.followup.send("Done.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+        set_season_state(interaction.guild.id, True)
+        await interaction.channel.send("🔓 **Season predictions are now OPEN.**")
+        await interaction.followup.send("Done.", ephemeral=True)
 
-    prediction_state_log(
-        interaction.guild.id,
-        str(interaction.user.id),
-        str(interaction.user),
-        "season_unlock",
-        prediction="season",
-        state="UNLOCKED"
-    )
+        prediction_state_log(
+            interaction.guild.id,
+            str(interaction.user.id),
+            str(interaction.user),
+            "season_unlock",
+            prediction="season",
+            state="UNLOCKED"
+        )
+
+    except Exception:
+        logger.exception("Season lock error")
 
 @bot.tree.command(name="leaderboard", description="View the leaderboard")
 async def leaderboard(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    # Top 10
-    top10 = get_top_n(interaction.guild.id, 10)
-    top10_text = "\n".join([f"{i+1}. {user} - {pts} pts" for i, (user, pts) in enumerate(top10)])
+    try:
+        await interaction.response.defer(ephemeral=True)
+        # Top 10
+        top10 = get_top_n(interaction.guild.id, 10)
+        top10_text = "\n".join([f"{i+1}. {user} - {pts} pts" for i, (user, pts) in enumerate(top10)])
 
-    # User rank
-    user_rank = get_user_rank(interaction.guild.id, interaction.user.name)
-    if user_rank:
-        rank, total_points = user_rank
-        # Highlight user if outside top 10
-        if rank > 10:
-            user_text = f"\n... \n**Your position: {rank} - {total_points} pts**"
+        # User rank
+        user_rank = get_user_rank(interaction.guild.id, interaction.user.name)
+        if user_rank:
+            rank, total_points = user_rank
+            # Highlight user if outside top 10
+            if rank > 10:
+                user_text = f"\n... \n**Your position: {rank} - {total_points} pts**"
+            else:
+                user_text = ""  # already in top 10
         else:
-            user_text = ""  # already in top 10
-    else:
-        user_text = "\nYou have no points yet."
+            user_text = "\nYou have no points yet."
 
-    await interaction.followup.send(f"**Leaderboard**\n{top10_text}{user_text}",
-                                            ephemeral=True)
+        await interaction.followup.send(f"**Leaderboard**\n{top10_text}{user_text}",
+                                                ephemeral=True)
+
+    except Exception:
+        logger.exception("Leaderboard error")
 
 GUIDE_DICTIONARY = {
     "Race Predictions": 
@@ -818,31 +871,35 @@ class GuideSelect(discord.ui.Select):
             max_values=1,
             options=options
         )
+    
+    try:
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer()
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+            category = self.values[0]
+            commands = GUIDE_DICTIONARY[category]
 
-        category = self.values[0]
-        commands = GUIDE_DICTIONARY[category]
+            embed = discord.Embed(
+                title=category,
+                color=discord.Color.red()
+            )
 
-        embed = discord.Embed(
-            title=category,
-            color=discord.Color.red()
-        )
+            # Build the description listing all commands in this category
+            if isinstance(commands, dict):
+                desc_lines = [f"**{cmd}**\n{desc}" for cmd, desc in commands.items()]
+                embed.description = "\n\n".join(desc_lines)
+            elif isinstance(commands, tuple):
+                cmd, desc = commands
+                embed.description = f"**{cmd}**\n{desc}"
+            else:
+                embed.description = str(commands)
 
-        # Build the description listing all commands in this category
-        if isinstance(commands, dict):
-            desc_lines = [f"**{cmd}**\n{desc}" for cmd, desc in commands.items()]
-            embed.description = "\n\n".join(desc_lines)
-        elif isinstance(commands, tuple):
-            cmd, desc = commands
-            embed.description = f"**{cmd}**\n{desc}"
-        else:
-            embed.description = str(commands)
+            embed.set_footer(text="Use the dropdown below to view another category.")
 
-        embed.set_footer(text="Use the dropdown below to view another category.")
+            await interaction.edit_original_response(embed=embed, view=self.view)
 
-        await interaction.edit_original_response(embed=embed, view=self.view)
+    except Exception:
+        logger.exception("GuideSelect error")
 
 class GuideView(discord.ui.View):
     def __init__(self, user_id: int):
@@ -851,98 +908,119 @@ class GuideView(discord.ui.View):
         self.add_item(GuideSelect())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Prevent random users from hijacking it
-        return interaction.user.id == self.user_id
+        try:
+            # Prevent random users from hijacking it
+            return interaction.user.id == self.user_id
+        except Exception:
+            logger.exception("GuideView error")
+
 
 @bot.tree.command(name="guide", description="View the F1 Predictions guide")
 async def guide(interaction: discord.Interaction):
+    try:
+        embed = discord.Embed(
+            title="F1Rats Prediction Guide",
+            description="Select a command from the dropdown below to see details.",
+            color=discord.Color.red()
+        )
 
-    embed = discord.Embed(
-        title="F1Rats Prediction Guide",
-        description="Select a command from the dropdown below to see details.",
-        color=discord.Color.red()
-    )
+        await interaction.response.send_message(
+            embed=embed,
+            view=GuideView(interaction.user.id),
+            ephemeral=True
+        )
 
-    await interaction.response.send_message(
-        embed=embed,
-        view=GuideView(interaction.user.id),
-        ephemeral=True
-    )
+    except Exception:
+        logger.exception("Guide error")
 
 @bot.tree.command(
     name="crazy_predict",
     description="Submit your absolutely unhinged prediction for the season"
 )
 async def crazy_predict(interaction: discord.Interaction, prediction: str):
-    await interaction.response.defer(ephemeral=True)
-    global SEASON
-    season = SEASON
-    MAX_PREDICTIONS = 5
+    try:
+        await interaction.response.defer(ephemeral=True)
+        global SEASON
+        season = SEASON
+        MAX_PREDICTIONS = 5
 
-    user = interaction.user
+        user = interaction.user
 
-    current_count = count_crazy_predictions(interaction.guild.id, user.id, season)
+        current_count = count_crazy_predictions(interaction.guild.id, user.id, season)
 
-    if current_count >= MAX_PREDICTIONS:
-        await interaction.followup.send(
-            f"❌ You’ve already submitted **{MAX_PREDICTIONS}** crazy predictions for **{SEASON}**.",
+        if current_count >= MAX_PREDICTIONS:
+            await interaction.followup.send(
+                f"❌ You’ve already submitted **{MAX_PREDICTIONS}** crazy predictions for **{SEASON}**.",
+            )
+            return
+
+        save_crazy_prediction(
+            interaction.guild.id,
+            user_id=user.id,
+            username=str(user),
+            season=season,
+            prediction=prediction,
+            timestamp=get_now()
         )
-        return
 
-    save_crazy_prediction(
-        interaction.guild.id,
-        user_id=user.id,
-        username=str(user),
-        season=season,
-        prediction=prediction,
-        timestamp=get_now()
-    )
+        await interaction.followup.send(
+            f"🔥 Prediction saved for **{season}**!\n"
+            f"({current_count + 1}/{MAX_PREDICTIONS})\n"
+            f"> {prediction}"
+        )
 
-    await interaction.followup.send(
-        f"🔥 Prediction saved for **{season}**!\n"
-        f"({current_count + 1}/{MAX_PREDICTIONS})\n"
-        f"> {prediction}"
-    )
+        await interaction.channel.send(
+            f" 🤯  **Crazy prediction for {season}**\n"
+            f"By **{user.display_name}**: \n"
+            f"> {prediction}"
+        )
 
-    await interaction.channel.send(
-        f" 🤯  **Crazy prediction for {season}**\n"
-        f"By **{user.display_name}**: \n"
-        f"> {prediction}"
-    )
+    except Exception:
+        logger.exception("Crazy_predict error")
 
 def format_timestamp(dt):
-    return dt.strftime("%d %b %Y, %H:%M UTC")
+    try:
+        return dt.strftime("%d %b %Y, %H:%M UTC")
+    except Exception:
+        logger.exception("format_timestamp error")
 
 def format_crazy_predictions(username, rows):
-    if not rows:
-        return f"❌ **{username}** has made no crazy predictions."
+    try:
+        if not rows:
+            return f"❌ **{username}** has made no crazy predictions."
 
-    lines = [f"🤯  **Crazy Predictions by {username}**\n"]
+        lines = [f"🤯  **Crazy Predictions by {username}**\n"]
 
-    for i, row in enumerate(rows, start=1):
-        prediction = row["prediction"]
-        timestamp = row["timestamp"]
+        for i, row in enumerate(rows, start=1):
+            prediction = row["prediction"]
+            timestamp = row["timestamp"]
 
-        lines.append(
-            f"**{i}.** _({format_timestamp(timestamp)})_\n"
-            f"> {prediction}\n"
-        )
+            lines.append(
+                f"**{i}.** _({format_timestamp(timestamp)})_\n"
+                f"> {prediction}\n"
+            )
 
-    return "\n".join(lines)
+        return "\n".join(lines)
+
+    except Exception:
+        logger.exception("format_crazy_predictions error")
 
 @bot.tree.command(
     name="view_crazy_predictions",
     description="View a user's crazy season predictions"
 )
 async def crazy_predictions(interaction: discord.Interaction, user: discord.User):
-    await interaction.response.defer(ephemeral=True)
-    global SEASON
-    season = SEASON
+    try:
+        await interaction.response.defer(ephemeral=True)
+        global SEASON
+        season = SEASON
 
-    rows = get_crazy_predictions(interaction.guild.id, user.id, season)
-    message = format_crazy_predictions(user.display_name, rows)
+        rows = get_crazy_predictions(interaction.guild.id, user.id, season)
+        message = format_crazy_predictions(user.display_name, rows)
 
-    await interaction.followup.send(message)
+        await interaction.followup.send(message)
+    except Exception:
+        logger.exception("crazy_predictions error")
 
 @bot.tree.command(
     name="race_bold_predict",
@@ -977,8 +1055,8 @@ async def bold_predict(interaction: discord.Interaction, prediction: str):
             ephemeral=False
         )
 
-    except Exception as e:
-        print(e)
+    except Exception:
+        logger.exception("bold_predict error")
 
 @bot.tree.command(
     name="update_leaderboard",
@@ -990,10 +1068,8 @@ async def update_leaderboard_cmd(interaction: discord.Interaction):
     try:
         update_leaderboard(interaction.guild.id)
         await interaction.followup.send("✅ Leaderboard updated.")
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Failed to update leaderboard:\n```{e}```"
-        )
+    except Exception:
+        logger.exception("update_leaderboard error")
 
 @tasks.loop(minutes=60/TIME_MULTIPLE)
 async def bold_predictions_publisher():
@@ -1003,8 +1079,8 @@ async def bold_predictions_publisher():
         lock_time = RACE_CACHE.get("lock_time")
 
         now = get_now()
-        print(f"NOW: {now}")
-        print(f"LOCK TIME: {lock_time}")
+        logger.info(f"NOW: {now}")
+        logger.info(f"LOCK TIME: {lock_time}")
 
         if not race_number or not lock_time:
             return
@@ -1013,22 +1089,16 @@ async def bold_predictions_publisher():
         if now < publish_time or now > lock_time:
             return
 
-        # --- INIT DICTS ---
-        if not hasattr(bold_predictions_publisher, "warn_messages"):
-            bold_predictions_publisher.warn_messages = {}
-        if not hasattr(bold_predictions_publisher, "messages"):
-            bold_predictions_publisher.messages = {}
-
         for guild in bot.guilds:
             guild_id = guild.id
-            preds = fetch_bold_predictions(guild_id, race_number = race_number)
-            print(f"{guild.name} ({guild_id}) PRED COUNT:", len(preds))
+            preds = fetch_bold_predictions(guild_id, race_number=race_number)
+            logger.info(f"{guild.name} ({guild_id}) PRED COUNT:", len(preds))
 
             # render message
             lines = [
                 f"**Bold Predictions — {race_name}**",
                 "",
-                f"Submissions lock in <t:{int(lock_time.timestamp())}:R>",
+                f"Lock in you predictions before Qualifying! \nSubmissions lock in <t:{int(lock_time.timestamp())}:R>",
                 ""
             ]
             if preds:
@@ -1042,43 +1112,47 @@ async def bold_predictions_publisher():
             # get channel
             channel_id = get_prediction_channel(guild_id)
             if not channel_id:
-                if guild_id not in bold_predictions_publisher.warn_messages:
-                    channel = guild.text_channels[0] if guild.text_channels else None
-                    if channel:
-                        msg = await channel.send(
-                            "Prediction channel not set! Admins, use /set_channel to configure it."
-                        )
-                        await msg.pin()
-                        bold_predictions_publisher.warn_messages[guild_id] = msg
-                        print(f"Sent warning in guild {guild.name}")
+                logger.info(f"No prediction channel set for guild {guild.name}")
                 continue
 
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                print(f"Channel {channel_id} not found in guild {guild.name}")
+            try:
+                channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            except discord.NotFound:
+                logger.exception(f"Channel {channel_id} not found in guild {guild.name}")
                 continue
 
             # send or edit message
-            if guild_id not in bold_predictions_publisher.messages:
+            existing = get_persistent_message(guild_id, "bold_predictions")
+            if existing:
+                try:
+                    msg = await channel.fetch_message(existing["message_id"])
+                    await msg.edit(content=content)
+                    logger.info(f"Edited existing prediction message in {guild.name}")
+                except discord.NotFound:
+                    msg = await channel.send(content)
+                    await msg.pin()
+                    save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
+                    logger.info(f"Old message deleted, sent new one in {guild.name}")
+            else:
                 msg = await channel.send(content)
                 await msg.pin()
-                bold_predictions_publisher.messages[guild_id] = msg
-                print(f"Sent new prediction message in {guild.name}")
-            else:
-                await bold_predictions_publisher.messages[guild_id].edit(content=content)
-                print(f"Edited existing prediction message in {guild.name}")
+                save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
+                logger.info(f"Sent new prediction message in {guild.name}")
 
-    except Exception as e:
-        print("BOLD LOOP ERROR:", e)
+    except Exception:
+        logger.exception("bold_predictions_publisher error")
 
 def format_bold_predictions(race_name, rows):
-    if not rows:
-        return f"❌ No bold predictions found for **{race_name}**"
-    
-    message = f"🧨 **Bold Predictions for {race_name}:**\n"
-    for username, prediction, in rows:
-        message += f"> **{username}**: {prediction}\n"
-    return message
+    try:
+        if not rows:
+            return f"❌ No bold predictions found for **{race_name}**"
+        
+        message = f"🧨 **Bold Predictions for {race_name}:**\n"
+        for username, prediction, in rows:
+            message += f"> **{username}**: {prediction}\n"
+        return message
+    except Exception:
+        logger.exception("format_bold_predictions error")
 
 @bot.tree.command(
     name="view_race_bold_predictions",
@@ -1087,16 +1161,19 @@ def format_bold_predictions(race_name, rows):
 @app_commands.describe(race="Select the race")
 async def view_race_bold_preds(interaction: discord.Interaction, race: str):
     await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # use the unified function with race_name
+        rows = fetch_bold_predictions(interaction.guild.id, race_name=race)
 
-    # use the unified function with race_name
-    rows = fetch_bold_predictions(interaction.guild.id, race_name=race)
+        if not rows:
+            await interaction.followup.send(f"❌ No bold predictions found for **{race}**", ephemeral=True)
+            return
 
-    if not rows:
-        await interaction.followup.send(f"❌ No bold predictions found for **{race}**", ephemeral=True)
-        return
-
-    message = format_bold_predictions(race, rows)
-    await interaction.followup.send(message)
+        message = format_bold_predictions(race, rows)
+        await interaction.followup.send(message)
+    except Exception:
+        logger.exception("view_race_bold_preds error")
 
 @view_race_bold_preds.autocomplete('race')
 async def race_autocomplete(interaction: discord.Interaction, current: str):
@@ -1107,20 +1184,16 @@ async def race_autocomplete(interaction: discord.Interaction, current: str):
             for race in SEASON_CALENDER
             if current.lower() in str(race).lower()
         ][:25]
-    except Exception as e:
-        print("Autocomplete ERROR", e)
-        return []
-
+    except Exception:
+        logger.exception("view_race_bold_preds.autocomplete error")
 
 @bot.tree.command(name="set_channel", description="Set or update the prediction channel (MODS ONLY)")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     try:
-        # Attempt to defer — this gives you more time
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
 
-        # basic checks
         if interaction.guild is None:
             await interaction.followup.send("This command can only be used in a server.")
             return
@@ -1132,10 +1205,8 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
         old_channel_id = get_prediction_channel(interaction.guild.id)
         old_channel = interaction.guild.get_channel(old_channel_id) if old_channel_id else None
 
-        # update DB
         set_prediction_channel(interaction.guild.id, channel.id)
 
-        # send followup
         if old_channel:
             await interaction.followup.send(
                 f"Prediction channel updated from {old_channel.mention} to {channel.mention}"
@@ -1146,30 +1217,22 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
             )
 
     except app_commands.MissingPermissions:
-        # fallback response in case user lacks admin perms
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "You must be an administrator to use this command.", ephemeral=True
-            )
-        else:
-            await interaction.followup.send("You must be an administrator to use this command.")
-    except Exception as e:
-        # generic error handling
+        await interaction.response.send_message(
+            "You must be an administrator to use this command.", ephemeral=True
+        )
+    except Exception:
+        logger.exception("Failed to set prediction channel for guild %s", interaction.guild.id)
+        # Send a generic error message to user without leaking e
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+                await interaction.response.send_message(
+                    "An unexpected error occurred. Please try again later.", ephemeral=True
+                )
             else:
-                await interaction.followup.send(f"Error: {e}")
-        except:
-            # if even that fails, just log it
-            print(f"Failed to send error message: {e}")
-
-@set_channel.error
-async def set_channel_error(interaction, error):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "You must be an administrator to use this command.",
-            ephemeral=True
-        )
+                await interaction.followup.send(
+                    "An unexpected error occurred. Please try again later."
+                )
+        except Exception:
+            logger.exception("Failed to notify user about error in set_channel for guild %s", interaction.guild.id)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
