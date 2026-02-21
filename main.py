@@ -42,13 +42,13 @@ from champions_watcher import final_champions_loop
 from get_now import get_now, TIME_MULTIPLE, SEASON
 from keep_alive import keep_alive
 import logging
+import sys
 
+sys.stdout.reconfigure(line_buffering=True)
 try:
     logging.basicConfig(
-        level=logging.INFO,  # DEBUG when developing
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        filename="bot.log",
-        filemode="a"
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 except Exception as e:
     print("Logging couldn't initialize, error:", e)

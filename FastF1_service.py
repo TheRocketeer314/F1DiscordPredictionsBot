@@ -259,6 +259,7 @@ async def get_final_champions_if_ready(year=None):
         year = SEASON
 
     now = get_now()
+    print(f"CHAMPIONS: now={now}, year={year}")
 
     # Get season calendar
     try:
@@ -269,19 +270,24 @@ async def get_final_champions_if_ready(year=None):
 
     last_race = calendar.iloc[-1]
     race_date = pd.to_datetime(last_race["Session5DateUtc"],utc=True,errors="coerce")
-
+    print(f"CHAMPIONS: last race={last_race['EventName']}, race_date={race_date}")
+    print(f"CHAMPIONS: threshold={race_date + timedelta(hours=12)}, passed={now >= race_date + timedelta(hours=12)}")
     if pd.isna(race_date):
+        print("CHAMPIONS: race_date is NaT, returning None")
         return None
 
     # Check if 0.5 day has passed since last race
     if now < race_date + timedelta(hours = 12):
+        print("CHAMPIONS: not ready yet")
         return None  # Not yet 0.5 day after last race
 
     try:
+        print("CHAMPIONS: fetching Ergast standings...")
         # Fetch standings from Ergast
         ergast = Ergast()
         driver_standings = ergast.get_driver_standings(season=year, round='last').content[0]
         constructor_standings = ergast.get_constructor_standings(season=year, round='last').content[0]
+        print(f"CHAMPIONS: WDC={driver_standings.iloc[0]['driverId']}, WCC={constructor_standings.iloc[0]['constructorId']}")
         if driver_standings.empty or constructor_standings.empty:
             logger.warning("Standings returned empty for season %s", year)
             return None
@@ -289,14 +295,9 @@ async def get_final_champions_if_ready(year=None):
         logger.exception("Failed to load standings for %s", year)
         return None
     
-    if driver_standings and constructor_standings:
-        # Winners are first in the list
-        wdc_winner = driver_standings.iloc[0]['driverId']
-        wcc_winner = constructor_standings.iloc[0]['constructorId']
-
-        return wdc_winner, wcc_winner
-    else:
-        return None
+    wdc_winner = driver_standings.iloc[0]['driverId']
+    wcc_winner = constructor_standings.iloc[0]['constructorId']
+    return wdc_winner, wcc_winner
 
 async def get_race_end_time(now):
     """Get the end time of the next unscored race."""
