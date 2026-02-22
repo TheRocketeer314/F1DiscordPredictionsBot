@@ -54,10 +54,15 @@ async def poll_results_loop(bot):
                 guild_id = guild.id
 
                 # Only score if this guild hasn't scored this race yet
+
+                logger.info("Checking existing scores: race_num=%s (type=%s), guild_id=%s (type=%s)", 
+                    race_num, type(race_num), guild_id, type(guild_id))
                 existing_scores = safe_fetch_one(
                     "SELECT 1 FROM race_scores WHERE race_number = %s AND guild_id = %s LIMIT 1",
                     (race_num, guild_id)
                 )
+                logger.info("existing_scores result: %s", existing_scores)
+
                 if existing_scores:
                     logger.info("Race %s already scored for guild %s", race_num, guild.name)
                     continue
