@@ -232,7 +232,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     guild_id = guild.id
-    logger.info(f"Joined new guild: {guild.name} ({guild_id})")
+    logger.info("Joined new guild: %s, %s", guild.name, guild_id)
 
     guild_name = guild.name
 
@@ -1079,8 +1079,8 @@ async def bold_predictions_publisher():
         lock_time = RACE_CACHE.get("lock_time")
 
         now = get_now()
-        logger.info(f"NOW: {now}")
-        logger.info(f"LOCK TIME: {lock_time}")
+        logger.info("NOW: %s", now)
+        logger.info("LOCK TIME: %s", lock_time)
 
         if not race_number or not lock_time:
             return
@@ -1090,54 +1090,71 @@ async def bold_predictions_publisher():
             return
 
         for guild in bot.guilds:
-            guild_id = guild.id
-            preds = fetch_bold_predictions(guild_id, race_number=race_number)
-            logger.info(f"{guild.name} ({guild_id}) PRED COUNT:", len(preds))
-
-            # render message
-            lines = [
-                f"**Bold Predictions — {race_name}**",
-                "",
-                f"Lock in you predictions before Qualifying! \nSubmissions lock in <t:{int(lock_time.timestamp())}:R>",
-                ""
-            ]
-            if preds:
-                for username, prediction in preds:
-                    lines.append(f"• **{username}** — {prediction}")
-            else:
-                lines.append(f"No predictions for the {race_name} yet.")
-
-            content = "\n".join(lines)
-
-            # get channel
-            channel_id = get_prediction_channel(guild_id)
-            if not channel_id:
-                logger.info(f"No prediction channel set for guild {guild.name}")
-                continue
-
             try:
-                channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-            except discord.NotFound:
-                logger.exception(f"Channel {channel_id} not found in guild {guild.name}")
-                continue
+                guild_id = guild.id
+                preds = fetch_bold_predictions(guild_id, race_number=race_number)
+                logger.info("%s (%s) PRED COUNT: %s", guild.name, guild_id, len(preds))
 
-            # send or edit message
-            existing = get_persistent_message(guild_id, "bold_predictions")
-            if existing:
+                # render message
+                lines = [
+                    f"**Bold Predictions — {race_name}**",
+                    "",
+                    f"Lock in you predictions before Qualifying! \nSubmissions lock in <t:{int(lock_time.timestamp())}:R>",
+                    ""
+                ]
+                if preds:
+                    for username, prediction in preds:
+                        lines.append(f"• **{username}** — {prediction}")
+                else:
+                    lines.append(f"No predictions for the {race_name} yet.")
+
+                content = "\n".join(lines)
+
+                # get channel
+                channel_id = get_prediction_channel(guild_id)
+                if not channel_id:
+                    try:
+                        first_channel = next(
+                            ch for ch in guild.text_channels 
+                            if ch.permissions_for(guild.me).send_messages
+                        )
+                        msg = await first_channel.send(
+                            "⚠️ No prediction channel set! Admins, use /set_channel to configure it."
+                        )
+                        await msg.pin()
+                    except StopIteration:
+                        logger.warning("No accessible text channels in guild %s", guild.name)
+                    continue
+
                 try:
-                    msg = await channel.fetch_message(existing["message_id"])
-                    await msg.edit(content=content)
-                    logger.info(f"Edited existing prediction message in {guild.name}")
+                    channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                
                 except discord.NotFound:
+                    logger.exception("Channel %s not found in guild %s", channel_id, guild.name)
+                    continue
+
+                # send or edit message
+                existing = get_persistent_message(guild_id, "bold_predictions")
+                if existing:
+                    try:
+                        msg = await channel.fetch_message(existing["message_id"])
+                        await msg.edit(content=content)
+                        logger.info("Edited existing prediction message in %s", guild.name)
+                    except discord.NotFound:
+                        msg = await channel.send(content)
+                        await msg.pin()
+                        save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
+                        logger.info("Old message deleted, sent new one in %s", guild.name)
+
+                else:
                     msg = await channel.send(content)
                     await msg.pin()
                     save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
-                    logger.info(f"Old message deleted, sent new one in {guild.name}")
-            else:
-                msg = await channel.send(content)
-                await msg.pin()
-                save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
-                logger.info(f"Sent new prediction message in {guild.name}")
+                    logger.info("Sent new prediction message in %s", guild.name)
+
+
+            except Exception:
+                logger.exception("bold_predictions_publisher error in guild- %s", guild_id)
 
     except Exception:
         logger.exception("bold_predictions_publisher error")

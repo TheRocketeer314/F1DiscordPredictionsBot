@@ -27,7 +27,7 @@ async def poll_results_loop(bot):
             delay = (race_end_time - get_now()).total_seconds()
 
             while delay > 0:
-                logger.info(f"Waiting {delay/3600/TIME_MULTIPLE:.2f} hours until next race ends...")
+                logger.info("Waiting %.2f hours until next race ends...", delay/3600/TIME_MULTIPLE)
                 await asyncio.sleep(min(delay / TIME_MULTIPLE, 600 / TIME_MULTIPLE))
                 race_end_time = await get_race_end_time(get_now())
                 delay = (race_end_time - get_now()).total_seconds()
@@ -59,7 +59,7 @@ async def poll_results_loop(bot):
                     (race_num, guild_id)
                 )
                 if existing_scores:
-                    logger.info(f"Race {race_num} already scored for guild {guild.name}")
+                    logger.info("Race %s already scored for guild %s", race_num, guild.name)
                     continue
                 
                 logger.info(
@@ -73,7 +73,7 @@ async def poll_results_loop(bot):
 
                 score_race_for_guild(race_num, guild_id)  
                 update_leaderboard(guild_id)
-                logger.info(f"Race {race_num} scored and leaderboard updated for guild {guild.name}")
+                logger.info("Race %s scored and leaderboard updated for guild %s", race_num, guild.id)
 
                 channel_id = get_prediction_channel(guild_id)
                 if channel_id:

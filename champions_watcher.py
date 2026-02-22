@@ -55,10 +55,10 @@ async def final_champions_loop(bot):
                     )
 
                     if existing_scores:
-                        logger.info(f"Final champions already scored for guild {guild.name}")
+                        logger.info("Final champions already scored for guild %s", guild.name)
                         continue
 
-                    logger.info(f"Scoring final champions for guild {guild.name}...")
+                    logger.info("Scoring final champions for guild %s...", guild.name)
                     score_final_champions_for_guild(guild_id)
                     update_leaderboard(guild_id)
                     channel_id = get_prediction_channel(guild_id)
@@ -72,7 +72,7 @@ async def final_champions_loop(bot):
                             "Championship predictions have been scored!"
                         )
 
-                    logger.info(f"Final champions scored for guild {guild.name}")
+                    logger.info("Final champions scored for guild %s", guild.name)
 
                 except Exception:
                     logger.exception("Failed scoring guild %s", guild.id)

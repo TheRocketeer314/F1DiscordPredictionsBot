@@ -531,7 +531,7 @@ def update_leaderboard(guild_id):
             
             results = cur.fetchall()
             for row in results:
-                logger.info(f"user_id: {row[0]}, username: {row[1]}, total_points: {row[2]}")
+                logger.info("user_id: %s, username: %s, total_points: %s", row[0], row[1], row[2])
             
             conn.commit()
             cur.close()
