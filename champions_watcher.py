@@ -22,13 +22,13 @@ async def final_champions_loop(bot):
     if delay > 0:
         await asyncio.sleep(delay / TIME_MULTIPLE)
 
-    # One or two guarded attempts (data lag protection)
-    for _ in range(2):
+    # Three guarded attempts (data lag protection)
+    for _ in range(3):
         try:
             result = await get_final_champions_if_ready()
         except Exception:
             logger.exception("Failed fetching final champions")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600 / TIME_MULTIPLE)
             continue
 
         if result:
