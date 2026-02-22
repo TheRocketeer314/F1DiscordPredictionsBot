@@ -36,12 +36,14 @@ async def final_champions_loop(bot):
             continue
 
         if result:
-            wdc_winner, wcc_winner = result
+            wdc_winner, wdc_second, wcc_winner, wcc_second = result
 
             wdc = wdc_winner[:3].upper()
+            wdc_second = wdc_second[:3].upper()
             wcc = wcc_winner
+            wcc_second = wcc_second
 
-            save_final_champions(season, wdc, wcc)
+            save_final_champions(season, wdc, wdc_second, wcc, wcc_second)
 
             shutil.rmtree(CACHE_DIR, ignore_errors=True)
             CACHE_DIR.mkdir(exist_ok=True)

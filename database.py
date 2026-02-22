@@ -122,7 +122,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS final_champions (
             season INTEGER PRIMARY KEY NOT NULL,
             wdc TEXT,
-            wcc TEXT
+            wdc_second TEXT,
+            wcc TEXT,
+            wcc_second TEXT
         );
     """)
         
@@ -461,15 +463,17 @@ def save_sprint_results(data):
         data["race_number"]
     ))
 
-def save_final_champions(season, wdc, wcc):
+def save_final_champions(season, wdc, wdc_second, wcc, wcc_second):
     safe_execute(
-        """INSERT INTO final_champions (season, wdc, wcc) 
-            VALUES (%s , %s, %s)
+        """INSERT INTO final_champions (season, wdc, wdc_second, wcc, wcc_second) 
+            VALUES (%s , %s, %s, %s, %s)
             ON CONFLICT (season) DO UPDATE SET
             wdc = excluded.wdc,
-            wcc = excluded.wcc
+            wdc_second = excluded.wdc_second,
+            wcc = excluded.wcc,
+            wcc_second = excluded.wcc_second
             """,
-        (season, wdc, wcc)
+        (season, wdc, wdc_second, wcc, wcc_second)
     )
 
 def is_race_scored(guild_id, race_number):
@@ -716,7 +720,7 @@ def get_correct_bold_predictions(guild_id, user_id):
         WHERE cbp.guild_id = %s AND cbp.user_id = %s
         ORDER BY cbp.race_name ASC
     """, (guild_id, user_id))
-    
+
 def prediction_state_log(guild_id, user_id, username, command, prediction, state):
     safe_execute("""
         INSERT INTO prediction_lock_log

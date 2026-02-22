@@ -1,6 +1,7 @@
 from database import safe_execute, safe_fetch_all, get_connection, safe_fetch_one
 import threading
 import logging
+from get_now import SEASON
 
 logger = logging.getLogger(__name__)
 
@@ -131,22 +132,31 @@ def score_final_champions_for_guild(guild_id):
 
         # Fetch real final champions
         result = safe_fetch_one(
-            "SELECT wdc, wcc FROM final_champions"
+            "SELECT wdc, wdc_second, wcc, wcc_second FROM final_champions WHERE season = %s",
+            (SEASON,)
         )
         if not result:
             return
 
         real_wdc = result['wdc']
+        real_wdc_second = result['wdc_second']
         real_wcc = result['wcc']
+        real_wcc_second = result['wcc_second']
 
         for pred in predictions:
             score = 0
 
             if pred['wdc'] == real_wdc:
-                score += 20
+                score += 25
+
+            if pred['wdc'] == real_wdc_second:
+                score += 15
 
             if pred['wcc'].lower() == real_wcc.lower():
                 score += 20
+
+            if pred['wcc'].lower() == real_wcc_second.lower():
+                score += 10
 
             safe_execute(
                 """

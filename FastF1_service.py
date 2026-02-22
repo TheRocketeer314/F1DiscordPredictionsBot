@@ -295,8 +295,10 @@ async def get_final_champions_if_ready(year=None):
         return None
     
     wdc_winner = driver_standings.iloc[0]['driverId']
+    wdc_second = driver_standings.iloc[1]['driverId']
     wcc_winner = constructor_standings.iloc[0]['constructorId']
-    return wdc_winner, wcc_winner
+    wcc_second = constructor_standings.iloc[1]['constructorId'] 
+    return wdc_winner, wdc_second, wcc_winner, wcc_second
 
 async def get_race_end_time(now):
     """Get the end time of the next unscored race."""
