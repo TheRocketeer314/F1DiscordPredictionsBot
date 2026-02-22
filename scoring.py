@@ -88,8 +88,6 @@ def score_race_for_guild(race_number, guild_id):
             "SELECT * FROM race_predictions WHERE race_number=%s AND guild_id=%s",
             (race_number, guild_id)
         )
-        if not predictions:
-            return
 
         result = safe_fetch_one(
             "SELECT * FROM race_results WHERE race_number=%s",
@@ -97,9 +95,12 @@ def score_race_for_guild(race_number, guild_id):
         )
         if not result:
             return
-
+        
         race_name = result['race_name']
 
+        if not predictions:
+            return
+        
         for pred in predictions:
             points = score_weekend(pred, result)
             safe_execute(

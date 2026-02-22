@@ -6,7 +6,12 @@ import logging
 import traceback
 import shutil
 from FastF1_service import race_results, sprint_results, get_race_end_time
-from database import save_race_results, save_sprint_results, safe_fetch_one, update_leaderboard, get_prediction_channel
+from database import (save_race_results,
+                      save_sprint_results, 
+                      update_leaderboard, 
+                      get_prediction_channel,
+                      is_race_scored,
+                      mark_race_scored)
 from scoring import score_race_for_guild
 from get_now import get_now, TIME_MULTIPLE
 
@@ -55,29 +60,24 @@ async def poll_results_loop(bot):
 
                 # Only score if this guild hasn't scored this race yet
 
-                logger.info("Checking existing scores: race_num=%s (type=%s), guild_id=%s (type=%s)", 
-                    race_num, type(race_num), guild_id, type(guild_id))
-                existing_scores = safe_fetch_one(
-                    "SELECT 1 FROM race_scores WHERE race_number = %s AND guild_id = %s LIMIT 1",
-                    (race_num, guild_id)
-                )
-                logger.info("existing_scores result: %s", existing_scores)
-
-                if existing_scores:
+                race_scored_for_guild = is_race_scored(guild_id, race_num)
+                if race_scored_for_guild:
                     logger.info("Race %s already scored for guild %s", race_num, guild.name)
                     continue
                 
                 logger.info(
-                    "race_num=%s | guild_id=%s | existing_scores=%s | scoring race %s for guild %s",
+                    "race_num=%s | guild_id=%s | race_scored_for_guild=%s | scoring race %s for guild %s",
                     race_num,
                     guild_id,
-                    existing_scores,
+                    race_scored_for_guild,
                     race_num,
                     guild.name,
                 )
 
                 score_race_for_guild(race_num, guild_id)  
                 update_leaderboard(guild_id)
+                mark_race_scored(guild_id, race_num)
+
                 logger.info("Race %s scored and leaderboard updated for guild %s", race_num, guild.id)
 
                 channel_id = get_prediction_channel(guild_id)

@@ -109,6 +109,14 @@ def init_db():
     """)
         
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS scored_races (
+            guild_id BIGINT NOT NULL,
+            race_number INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, race_number)
+        );
+    """)
+        
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS final_champions (
             season INTEGER PRIMARY KEY NOT NULL,
             wdc TEXT,
@@ -444,6 +452,20 @@ def save_final_champions(season, wdc, wcc):
         (season, wdc, wcc)
     )
 
+def is_race_scored(guild_id, race_number):
+    row = safe_fetch_one(
+        "SELECT 1 FROM scored_races WHERE guild_id = %s AND race_number = %s",
+        (guild_id, race_number)
+    )
+    return row is not None
+
+def mark_race_scored(guild_id, race_number):
+    safe_execute("""
+        INSERT INTO scored_races (guild_id, race_number)
+        VALUES (%s, %s)
+        ON CONFLICT DO NOTHING
+    """, (guild_id, race_number))
+    
 def add_points(guild_id, user_id: str, username: str, points: int, reason: str):
     safe_execute(
         "INSERT INTO force_points_log (guild_id, userid, username, points_given, reason) VALUES (%s, %s, %s, %s, %s)",
