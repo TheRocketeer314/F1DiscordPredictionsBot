@@ -5,7 +5,11 @@ from config import CACHE_DIR
 import logging
 import shutil
 from FastF1_service import get_final_champions_if_ready, get_season_end_time
-from database import save_final_champions, update_leaderboard, safe_fetch_one, get_prediction_channel
+from database import (save_final_champions, 
+                      update_leaderboard, 
+                      get_prediction_channel, 
+                      is_season_scored, 
+                      mark_season_scored)
 from scoring import score_final_champions_for_guild
 from get_now import get_now, TIME_MULTIPLE, SEASON
 
@@ -48,19 +52,17 @@ async def final_champions_loop(bot):
                 try:
                     guild_id = guild.id
 
-                    # Prevent double scoring
-                    existing_scores = safe_fetch_one(
-                        "SELECT 1 FROM final_scores WHERE guild_id = %s LIMIT 1",
-                        (guild_id,)
-                    )
-
-                    if existing_scores:
+                    # Prevents double scoring 
+                                        
+                    if is_season_scored(guild_id, season):
                         logger.info("Final champions already scored for guild %s", guild.name)
                         continue
 
                     logger.info("Scoring final champions for guild %s...", guild.name)
                     score_final_champions_for_guild(guild_id)
                     update_leaderboard(guild_id)
+                    mark_season_scored(guild_id, season)
+
                     channel_id = get_prediction_channel(guild_id)
                     if channel_id:
                         channel = guild.get_channel(channel_id)

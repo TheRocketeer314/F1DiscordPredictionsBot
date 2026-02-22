@@ -10,7 +10,9 @@ from config import CACHE_DIR
 from pathlib import Path
 from collections import defaultdict
 from FastF1_service import refresh_race_cache, season_calender
-from database import (init_db, save_race_predictions,
+from database import (init_db,
+                      safe_fetch_one,
+                      save_race_predictions,
                       save_constructor_prediction,
                       save_sprint_predictions,
                       set_season_state,
@@ -35,11 +37,14 @@ from database import (init_db, save_race_predictions,
                       ensure_lock_rows,
                       upsert_guild,
                       get_persistent_message,
-                      save_persistent_message)
+                      save_persistent_message,
+                      mark_race_scored,
+                      mark_season_scored)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
 from get_now import get_now, TIME_MULTIPLE, SEASON
+from scoring import score_race_for_guild, score_final_champions_for_guild
 from keep_alive import keep_alive
 import logging
 import sys
@@ -845,7 +850,11 @@ GUIDE_DICTIONARY = {
                      "/season_lock":
                      "Lock season predictions.",
                      "/season_unlock":
-                     "Unlock season predictions.",},
+                     "Unlock season predictions.",
+                     "/force_score_race":
+                     "Force scoring of a particular race.",
+                     "/force_score_season":
+                     "Force scoring of the current season."},
     "Set Channel":
                     ("/set_channel",
                      "**MODS ONLY**\n\nSet the channel in which to receive messages.\n\nThis should ideally be the channel in which the prediction competetition will be carried out"),
@@ -1258,4 +1267,80 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
         except Exception:
             logger.exception("Failed to notify user about error in set_channel for guild %s", interaction.guild.id)
 
+@bot.tree.command(name="force_score_race", description="Manually score a race (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(race="Select the race to score")
+async def force_score_race(interaction: discord.Interaction, race: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        # Get race number from race name
+        result = safe_fetch_one(
+            "SELECT race_number FROM race_results WHERE race_name = %s",
+            (race,)
+        )
+        if not result:
+            await interaction.followup.send(f"❌ No results found for **{race}**. Results may not be saved yet.", ephemeral=True)
+            return
+
+        race_num = result['race_number']
+        guild_id = interaction.guild.id
+
+        score_race_for_guild(race_num, guild_id)
+        update_leaderboard(guild_id)
+        mark_race_scored(guild_id, race_num)
+
+        await interaction.followup.send(f"✅ **The {race}** has been scored!", ephemeral=True)
+
+    except Exception:
+        logger.exception("force_score_race error")
+
+@force_score_race.autocomplete('race')
+async def force_score_race_autocomplete(interaction: discord.Interaction, current: str):
+    try:
+        return [
+            app_commands.Choice(name=str(race), value=str(race))
+            for race in SEASON_CALENDER
+            if current.lower() in str(race).lower()
+        ][:25]
+    except Exception:
+        logger.exception("force_score_race autocomplete error")
+        return []
+
+@force_score_race.error
+async def force_score_race_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="force_score_season", description="Manually score season predictions (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def force_score_season(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        guild_id = interaction.guild.id
+
+        result = safe_fetch_one("SELECT wdc, wcc FROM final_champions WHERE season = %s", (SEASON,))
+        if not result:
+            await interaction.followup.send("❌ No final champions data found. Champions may not be saved yet.", ephemeral=True)
+            return
+
+        score_final_champions_for_guild(guild_id)
+        update_leaderboard(guild_id)
+        mark_season_scored(guild_id, SEASON)
+
+        await interaction.followup.send(f"✅ **The {SEASON}** season predictions have been scored!", ephemeral=True)
+
+    except Exception:
+        logger.exception("force_score_season error")
+
+@force_score_season.error
+async def force_score_season_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+        
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
