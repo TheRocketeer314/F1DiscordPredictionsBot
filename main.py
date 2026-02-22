@@ -1118,10 +1118,16 @@ async def bold_predictions_publisher():
                             ch for ch in guild.text_channels 
                             if ch.permissions_for(guild.me).send_messages
                         )
-                        msg = await first_channel.send(
-                            "⚠️ No prediction channel set! Admins, use /set_channel to configure it."
-                        )
-                        await msg.pin()
+                        # Only send if we haven't already
+                        existing_warning = get_persistent_message(guild_id, "no_channel_warning")
+                        if not existing_warning:
+                            msg = await first_channel.send(
+                                "⚠️ No prediction channel set! Admins, use /set_channel to configure it."
+                            )
+                            await msg.pin()
+                            save_persistent_message(guild_id, "no_channel_warning", first_channel.id, msg.id)
+                            logger.info("Sent no-channel warning in guild %s", guild.name)
+                    
                     except StopIteration:
                         logger.warning("No accessible text channels in guild %s", guild.name)
                     continue
