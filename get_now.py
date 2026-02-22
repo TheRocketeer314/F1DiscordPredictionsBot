@@ -3,11 +3,25 @@ import os
 
 
 real_time = datetime.now(timezone.utc)
-TARGET = datetime(2025, 12, 5, 13, 00, tzinfo=timezone.utc) #to go to a specific date, enter the datetime in this format: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+
+#to go to a specific date, enter the datetime in this format in environment variables: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+
+_target_str = os.getenv('TARGET', None)
+try:
+    TARGET = datetime.fromisoformat(_target_str) if _target_str else None
+except ValueError:
+    TARGET = None
+
+TIME_MULTIPLE = float(os.getenv('TIME_MULTIPLE', 1.0))
 if TARGET:
     OFFSET = real_time - TARGET
-TEST_TIME = None
-TIME_MULTIPLE = 600.0
+
+_test_time_str = os.getenv('TEST_TIME', None)
+try:
+    TEST_TIME = datetime.fromisoformat(_test_time_str) if _test_time_str else None
+except ValueError:
+    TEST_TIME = None
+
 try:
     SEASON = int(os.getenv('SEASON', datetime.now().year))
 except ValueError:
