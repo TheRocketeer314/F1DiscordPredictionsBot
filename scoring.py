@@ -47,7 +47,7 @@ def score_pole(pred, result):
 
 def score_fastest_lap(pred, result):
     if pred["fastest_lap"] == result["fastest_lap"]:
-        return 3
+        return 4
     return 0
 
 def score_sprint_winner(pred, result):
@@ -66,7 +66,7 @@ def score_sprint_pole(pred, result):
     
 def score_constructor(pred, result):
     if pred["constructor_winner"] == result["constructor"]:
-        return 2
+        return 3
     return 0
 
 def score_weekend(pred, result):

@@ -39,7 +39,9 @@ from database import (init_db,
                       get_persistent_message,
                       save_persistent_message,
                       mark_race_scored,
-                      mark_season_scored)
+                      mark_season_scored,
+                      save_correct_bold_prediction,
+                      get_correct_bold_predictions)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
@@ -86,6 +88,8 @@ if RACE_CACHE.get("lock_time") is not None:
     leaderboard_update_time = RACE_CACHE.get("lock_time") + timedelta(days=3)
 
 leaderboard_task = None
+
+BOLD_PRED_POINTS = int(os.getenv('BOLD_PRED_POINTS', 10))
 
 # Helpers
 
@@ -712,7 +716,7 @@ class SeasonSubmitButton(discord.ui.Button):
 
             if not self.view2.wdc or not self.view2.wcc:
                 await interaction.followup.send(
-                    "Please select both WDC and WCC.",
+                "Please select both WDC and WCC.",
                     ephemeral=True
                 )
                 return
@@ -834,7 +838,9 @@ GUIDE_DICTIONARY = {
                     {"/view_race_bold_predictions":
                      "View all bold predictions for a selected race.",
                      "/view_crazy_predictions":
-                     "View all crazy predictions given by a selected user.",},
+                     "View all crazy predictions given by a selected user.",
+                     "/view_correct_bold_predictions":
+                     "View all the correct bold predictions by a user."},
     "Leaderboard":
                     {"/leaderboard":
                      "View the leaderboard for your server.",
@@ -854,7 +860,9 @@ GUIDE_DICTIONARY = {
                      "/force_score_race":
                      "Force scoring of a particular race.",
                      "/force_score_season":
-                     "Force scoring of the current season."},
+                     "Force scoring of the current season.",
+                     "/correct_bold_predictions":
+                     "Score the correct bold predictions for a race."},
     "Set Channel":
                     ("/set_channel",
                      "**MODS ONLY**\n\nSet the channel in which to receive messages.\n\nThis should ideally be the channel in which the prediction competetition will be carried out"),
@@ -1219,6 +1227,140 @@ async def race_autocomplete(interaction: discord.Interaction, current: str):
     except Exception:
         logger.exception("view_race_bold_preds.autocomplete error")
 
+class CorrectBoldPredView(discord.ui.View):
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.selected_users = []
+        self.selected_race = None
+        self.add_item(CorrectBoldPredUserSelect(self))
+        self.add_item(CorrectBoldPredRaceSelect(self))
+        self.add_item(CorrectBoldPredSubmit(self))
+
+class CorrectBoldPredUserSelect(discord.ui.UserSelect):
+    def __init__(self, view2):
+        self.view2 = view2
+        super().__init__(
+            placeholder="Select users who got it correct",
+            min_values=1,
+            max_values=10
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            self.view2.selected_users = self.values
+            await interaction.response.defer()
+        except Exception:
+            logger.exception("CorrectBoldPredUserSelect callback error")
+
+class CorrectBoldPredRaceSelect(discord.ui.Select):
+    def __init__(self, view2):
+        self.view2 = view2
+        super().__init__(
+            placeholder="Select the race",
+            options=[
+                discord.SelectOption(label=race, value=race)
+                for race in SEASON_CALENDER
+            ][:25]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            self.view2.selected_race = self.values[0]
+            await interaction.response.defer()
+        except Exception:
+            logger.exception("CorrectBoldPredRaceSelect callback error")
+
+class CorrectBoldPredSubmit(discord.ui.Button):
+    global BOLD_PRED_POINTS 
+    def __init__(self, view2):
+        self.view2 = view2
+        super().__init__(label="Submit", style=discord.ButtonStyle.green)
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not self.view2.selected_users or not self.view2.selected_race:
+                await interaction.followup.send("❌ Please select both users and a race.", ephemeral=True)
+                return
+
+            guild_id = interaction.guild.id
+            race_name = self.view2.selected_race
+
+            for user in self.view2.selected_users:
+                save_correct_bold_prediction(guild_id, user.id, str(user), race_name)
+
+            update_leaderboard(guild_id)
+
+            user_mentions = ", ".join(u.mention for u in self.view2.selected_users)
+            channel_id = get_prediction_channel(guild_id)
+            if channel_id:
+                try:
+                    channel = interaction.guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    await channel.send(
+                        f"🎯 **Correct Bold Predictions — {race_name}**\n"
+                        f"The following users got their bold prediction right:\n"
+                        f"{user_mentions}\n"
+                        f"Each receives **{BOLD_PRED_POINTS} points**!"
+                    )
+                except discord.NotFound:
+                    logger.exception("Channel not found when sending bold pred results")
+
+            await interaction.followup.send("✅ Correct bold predictions saved and leaderboard updated!", ephemeral=True)
+            self.view2.stop()
+
+        except Exception:
+            logger.exception("CorrectBoldPredSubmit callback error")
+
+@bot.tree.command(name="correct_bold_predictions", description="Mark correct bold predictions (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def correct_bold_predictions(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(
+            "Select the users who got their bold prediction correct and the race:",
+            view=CorrectBoldPredView(interaction.guild),
+            ephemeral=True
+        )
+    except Exception:
+        logger.exception("correct_bold_predict error")
+
+@correct_bold_predictions.error
+async def correct_bold_predict_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="view_correct_bold_predictions", description="View a user's correct bold predictions")
+@app_commands.describe(user="The user to view")
+async def view_correct_bold_predictions(interaction: discord.Interaction, user: discord.Member):
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        rows = get_correct_bold_predictions(interaction.guild.id, user.id)
+        count = len(rows)
+
+        if not rows:
+            await interaction.followup.send(
+                f"❌ **{user.display_name}** has no correct bold predictions yet.",
+                ephemeral=True
+            )
+            return
+
+        lines = [f"🎯 **Correct Bold Predictions by {user.display_name}** ({count} total, {count * BOLD_PRED_POINTS} points)\n"]
+        for i, row in enumerate(rows, start=1):
+            prediction = row['prediction'] if row['prediction'] else "_Prediction not recorded_"
+            lines.append(f"**{i}.** {row['race_name']}\n> {prediction}")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    except Exception:
+        logger.exception("view_correct_bold_predictions error")
+
+
 @bot.tree.command(name="set_channel", description="Set or update the prediction channel (MODS ONLY)")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -1342,5 +1484,5 @@ async def force_score_season_error(interaction: discord.Interaction, error):
             "❌ You don't have permission to use this command.",
             ephemeral=True
         )
-        
+
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

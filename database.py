@@ -9,6 +9,8 @@ import socket
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+BOLD_PRED_POINTS = int(os.getenv('BOLD_PRED_POINTS', 10))
+
 #Force IPv4 
 orig_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(*args, **kwargs):
@@ -199,6 +201,16 @@ def init_db():
                 timestamp TIMESTAMP NOT NULL,
                 PRIMARY KEY (guild_id, user_id, race_number)
             )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS correct_bold_predictions (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT NOT NULL,
+                race_name TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, race_name)
+            );
         """)
 
         cur.execute("""
@@ -487,7 +499,7 @@ def mark_season_scored(guild_id, season):
         VALUES (%s, %s)
         ON CONFLICT DO NOTHING
     """, (guild_id, season))
-    
+
 def add_points(guild_id, user_id: str, username: str, points: int, reason: str):
     safe_execute(
         "INSERT INTO force_points_log (guild_id, userid, username, points_given, reason) VALUES (%s, %s, %s, %s, %s)",
@@ -504,6 +516,7 @@ def add_points(guild_id, user_id: str, username: str, points: int, reason: str):
     """, (guild_id, user_id, username, points))
 
 def update_leaderboard(guild_id):
+    global BOLD_PRED_POINTS
     with db_lock:
         conn = get_connection()
         try:
@@ -553,6 +566,12 @@ def update_leaderboard(guild_id):
                     SELECT guild_id, user_id AS user_id, username, points
                     FROM total_force_points
                     WHERE guild_id = %s
+                        
+                    UNION ALL
+
+                    SELECT guild_id, user_id, username, %s as points
+                    FROM correct_bold_predictions
+                    WHERE guild_id = %s
                 )
                 INSERT INTO leaderboard (guild_id, user_id, username, total_points)
                 SELECT
@@ -563,7 +582,7 @@ def update_leaderboard(guild_id):
                 FROM combined
                 GROUP BY guild_id, user_id
                 ORDER BY total_points DESC;
-            """, (guild_id, guild_id, guild_id))
+            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id))
             
             # Check what got inserted
             cur.execute("""
@@ -679,8 +698,25 @@ def fetch_bold_predictions(guild_id, race_number=None, race_name=None):
     else:
         return []
     
+def save_correct_bold_prediction(guild_id, user_id, username, race_name):
+    safe_execute("""
+        INSERT INTO correct_bold_predictions (guild_id, user_id, username, race_name)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+    """, (guild_id, user_id, username, race_name))
 
-
+def get_correct_bold_predictions(guild_id, user_id):
+    return safe_fetch_all("""
+        SELECT cbp.race_name, bp.prediction
+        FROM correct_bold_predictions cbp
+        LEFT JOIN bold_predictions bp 
+            ON cbp.guild_id = bp.guild_id 
+            AND cbp.user_id = bp.user_id 
+            AND cbp.race_name = bp.race_name
+        WHERE cbp.guild_id = %s AND cbp.user_id = %s
+        ORDER BY cbp.race_name ASC
+    """, (guild_id, user_id))
+    
 def prediction_state_log(guild_id, user_id, username, command, prediction, state):
     safe_execute("""
         INSERT INTO prediction_lock_log
