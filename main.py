@@ -281,8 +281,8 @@ DRIVERS = [
 
 CONSTRUCTORS = [
     "Mercedes", "Red Bull Racing", "Ferrari", "McLaren",
-    "Aston Martin", "Haas", "Racing Bulls","Audi",
-    "Williams", "Cadillac", "Alpine"]
+    "Haas F1 Team", "Racing Bulls", "Williams",
+    "Audi", "Cadillac", "Aston Martin", "Alpine"]
 
 user_predictions = defaultdict(
     lambda: defaultdict(

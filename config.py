@@ -17,5 +17,5 @@ CONSTRUCTOR_ERGAST_MAP = {
     "Alpine": "alpine",
     "Haas": "haas",
     "Cadillac": "cadillac",
-    "Audi": "audi"  
+    "Audi": "audi"
 }

@@ -139,6 +139,8 @@ async def race_results(year=None):
         race_results = race_session.results
         if race_results.empty:
             logger.warning("Race results are empty for %s", finished_race)
+        logger.info("Driver codes: %s", race_results["Abbreviation"].tolist())
+        logger.info("Constructor names: %s", race_results["TeamName"].unique().tolist())
 
     except Exception:
         logger.exception("Error when fetching race results for %s", finished_race)
