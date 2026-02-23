@@ -1,7 +1,8 @@
-from database import safe_execute, safe_fetch_all, get_connection, safe_fetch_one
+from database import safe_execute, safe_fetch_all, safe_fetch_one, has_led_championship
 import threading
 import logging
 from get_now import SEASON
+from config import CONSTRUCTOR_ERGAST_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,9 @@ def score_race_for_guild(race_number, guild_id):
     except Exception:
         logger.exception("score_race_for_guild error")
 
+def normalize_constructor(name):
+    return CONSTRUCTOR_ERGAST_MAP.get(name, name.lower().replace(" ", "_"))
+
 def score_final_champions_for_guild(guild_id):
     try:
         # Fetch all predictions for this guild
@@ -148,15 +152,17 @@ def score_final_champions_for_guild(guild_id):
 
             if pred['wdc'] == real_wdc:
                 score += 25
-
-            if pred['wdc'] == real_wdc_second:
+            elif pred['wdc'] == real_wdc_second:
                 score += 15
+            elif has_led_championship(SEASON, pred['wdc'], 'wdc'):
+                score += 5
 
-            if pred['wcc'].lower() == real_wcc.lower():
+            if normalize_constructor(pred['wcc']) == real_wcc:
                 score += 20
-
-            if pred['wcc'].lower() == real_wcc_second.lower():
+            elif normalize_constructor(pred['wcc']) == real_wcc_second:
                 score += 10
+            elif has_led_championship(SEASON, normalize_constructor(pred['wcc']), 'wcc'):
+                score += 5
 
             safe_execute(
                 """

@@ -1,10 +1,12 @@
 from datetime import datetime, timezone, timedelta
 import os
-
+from dotenv import load_dotenv
 
 real_time = datetime.now(timezone.utc)
 
-#to go to a specific date, enter the datetime in this format in environment variables: datetime(2025, 11, 25, 13, 00, tzinfo=timezone.utc)
+load_dotenv()
+
+#to go to a specific date, enter the datetime in this format in environment variables: 2025-11-25T13:00:00+00:00
 
 _target_str = os.getenv('TARGET', None)
 try:

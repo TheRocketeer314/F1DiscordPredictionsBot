@@ -119,6 +119,15 @@ def init_db():
     """)
         
         cur.execute("""
+                CREATE TABLE IF NOT EXISTS championship_leaders (
+                season INTEGER NOT NULL,
+                type TEXT NOT NULL, 
+                leader TEXT NOT NULL,
+                PRIMARY KEY (season, type, leader)
+            );
+        """)
+
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS final_champions (
             season INTEGER PRIMARY KEY NOT NULL,
             wdc TEXT,
@@ -475,6 +484,26 @@ def save_final_champions(season, wdc, wdc_second, wcc, wcc_second):
             """,
         (season, wdc, wdc_second, wcc, wcc_second)
     )
+
+def save_championship_leaders(season, wdc_leader, wcc_leader):
+    safe_execute("""
+        INSERT INTO championship_leaders (season, type, leader)
+        VALUES (%s, 'wdc', %s)
+        ON CONFLICT DO NOTHING
+    """, (season, wdc_leader))
+    
+    safe_execute("""
+        INSERT INTO championship_leaders (season, type, leader)
+        VALUES (%s, 'wcc', %s)
+        ON CONFLICT DO NOTHING
+    """, (season, wcc_leader))
+
+def has_led_championship(season, leader, type):
+    row = safe_fetch_one("""
+        SELECT 1 FROM championship_leaders 
+        WHERE season = %s AND type = %s AND leader = %s
+    """, (season, type, leader))
+    return row is not None
 
 def is_race_scored(guild_id, race_number):
     row = safe_fetch_one(

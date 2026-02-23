@@ -5,15 +5,16 @@ from config import CACHE_DIR
 import logging
 import traceback
 import shutil
-from FastF1_service import race_results, sprint_results, get_race_end_time
+from FastF1_service import race_results, sprint_results, get_race_end_time, get_standings_leaders
 from database import (save_race_results,
                       save_sprint_results, 
                       update_leaderboard, 
                       get_prediction_channel,
                       is_race_scored,
-                      mark_race_scored)
+                      mark_race_scored,
+                      save_championship_leaders)
 from scoring import score_race_for_guild
-from get_now import get_now, TIME_MULTIPLE
+from get_now import get_now, TIME_MULTIPLE, SEASON
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ async def poll_results_loop(bot):
             sprint_data = await sprint_results()
             if sprint_data:
                 save_sprint_results(sprint_data)
+
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            CACHE_DIR.mkdir(exist_ok=True)
+            fastf1.Cache.enable_cache(str(CACHE_DIR))
+
+            standings = await get_standings_leaders(race_num=race_num)
+            if standings:
+                wdc_leader, wcc_leader = standings
+                save_championship_leaders(SEASON, wdc_leader, wcc_leader)
+                logger.info("Standings leaders saved: WDC=%s, WCC=%s", wdc_leader, wcc_leader)
 
             shutil.rmtree(CACHE_DIR, ignore_errors=True)
             CACHE_DIR.mkdir(exist_ok=True)

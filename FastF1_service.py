@@ -286,6 +286,8 @@ async def get_final_champions_if_ready(year=None):
         ergast = Ergast()
         driver_standings = ergast.get_driver_standings(season=year, round='last').content[0]
         constructor_standings = ergast.get_constructor_standings(season=year, round='last').content[0]
+        logger.info("Driver standings codes: %s", [d['driverCode'] for d in driver_standings.to_dict('records')])
+        logger.info("Constructor standings codes: %s", [c['constructorId'] for c in constructor_standings.to_dict('records')])
         logger.info("CHAMPIONS: WDC=%s, WCC=%s", driver_standings.iloc[0]['driverId'], constructor_standings.iloc[0]['constructorId'])
         if driver_standings.empty or constructor_standings.empty:
             logger.warning("Standings returned empty for season %s", year)
@@ -294,8 +296,8 @@ async def get_final_champions_if_ready(year=None):
         logger.exception("Failed to load standings for %s", year)
         return None
     
-    wdc_winner = driver_standings.iloc[0]['driverId']
-    wdc_second = driver_standings.iloc[1]['driverId']
+    wdc_winner = driver_standings.iloc[0]['driverCode']
+    wdc_second = driver_standings.iloc[1]['driverCode']
     wcc_winner = constructor_standings.iloc[0]['constructorId']
     wcc_second = constructor_standings.iloc[1]['constructorId'] 
     return wdc_winner, wdc_second, wcc_winner, wcc_second
@@ -372,3 +374,23 @@ async def get_season_end_time(year=None):
 
     season_end_time = race_start + timedelta(hours=12)
     return season_end_time.to_pydatetime()
+
+async def get_standings_leaders(race_num, year=None):
+    if year is None:
+        year = SEASON
+    try:
+        ergast = Ergast()
+        driver_standings = await asyncio.to_thread(
+            lambda: ergast.get_driver_standings(season=year, round=race_num).content[0]
+        )
+        constructor_standings = await asyncio.to_thread(
+            lambda: ergast.get_constructor_standings(season=year, round=race_num).content[0]
+        )
+        if driver_standings.empty or constructor_standings.empty:
+            return None
+        wdc_leader = driver_standings.iloc[0]['driverId'][:3].upper()
+        wcc_leader = constructor_standings.iloc[0]['constructorId'].lower()
+        return wdc_leader, wcc_leader
+    except Exception:
+        logger.exception("Failed to get standings leaders")
+        return None
