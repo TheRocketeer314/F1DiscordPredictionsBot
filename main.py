@@ -541,6 +541,7 @@ async def force_points(
             script = f"**{-(points)} points deducted from {user.mention}**"
         else:
             script = f"**{user.mention} received {points} points**"
+        
         if reason:
             message = f"{script} for *{reason}*."
         else:
