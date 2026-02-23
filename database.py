@@ -179,12 +179,17 @@ def init_db():
             );
         """)
 
-        cur.execute("""CREATE TABLE IF NOT EXISTS leaderboard (
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard (
             guild_id BIGINT NOT NULL,
             user_id BIGINT,
             username TEXT,
             total_points INTEGER,
-                    
+            fully_correct_podiums INTEGER DEFAULT 0,
+            correct_podiums INTEGER DEFAULT 0,
+            correct_poles INTEGER DEFAULT 0,
+            correct_fastest_laps INTEGER DEFAULT 0,
+            correct_constructors INTEGER DEFAULT 0,
             PRIMARY KEY (guild_id, user_id)
             );
         """)
@@ -549,41 +554,15 @@ def add_points(guild_id, user_id: str, username: str, points: int, reason: str):
     """, (guild_id, user_id, username, points))
 
 def update_leaderboard(guild_id):
-    global BOLD_PRED_POINTS
     with db_lock:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            
-            # First, let's see what we're combining (guild-specific)
-            cur.execute("""
-                SELECT user_id, username, points, 'race_scores' as source
-                FROM race_scores
-                WHERE guild_id = %s
 
-                UNION ALL
-
-                SELECT user_id, username, points, 'final_scores' as source
-                FROM final_scores
-                WHERE guild_id = %s
-
-                UNION ALL
-
-                SELECT user_id AS user_id, username, points, 'total_force_points' as source
-                FROM total_force_points
-                WHERE guild_id = %s
-
-                ORDER BY user_id, source;
-            """, (guild_id, guild_id, guild_id))
-            
-            all_data = cur.fetchall()
-            cur.execute(
-                "DELETE FROM leaderboard WHERE guild_id = %s;",
-                (guild_id,)
-            )
+            cur.execute("DELETE FROM leaderboard WHERE guild_id = %s;", (guild_id,))
 
             cur.execute("""
-                WITH combined AS (
+                WITH combined_points AS (
                     SELECT guild_id, user_id, username, points
                     FROM race_scores
                     WHERE guild_id = %s
@@ -596,72 +575,101 @@ def update_leaderboard(guild_id):
 
                     UNION ALL
 
-                    SELECT guild_id, user_id AS user_id, username, points
+                    SELECT guild_id, user_id, username, points
                     FROM total_force_points
                     WHERE guild_id = %s
-                        
+
                     UNION ALL
 
                     SELECT guild_id, user_id, username, %s as points
                     FROM correct_bold_predictions
                     WHERE guild_id = %s
+                ),
+                total AS (
+                    SELECT guild_id, user_id, MAX(username) as username, SUM(points) as total_points
+                    FROM combined_points
+                    GROUP BY guild_id, user_id
+                ),
+                tiebreakers AS (
+                    SELECT 
+                        rp.guild_id,
+                        rp.user_id,
+                        COUNT(CASE WHEN rp.pos1 = rr.pos1 AND rp.pos2 = rr.pos2 AND rp.pos3 = rr.pos3 THEN 1 END) AS fully_correct_podiums,
+                        COUNT(CASE WHEN rp.pos1 = rr.pos1 THEN 1 END) +
+                        COUNT(CASE WHEN rp.pos2 = rr.pos2 THEN 1 END) +
+                        COUNT(CASE WHEN rp.pos3 = rr.pos3 THEN 1 END) AS correct_podiums,
+                        COUNT(CASE WHEN rp.pole = rr.pole THEN 1 END) AS correct_poles,
+                        COUNT(CASE WHEN rp.fastest_lap = rr.fastest_lap THEN 1 END) AS correct_fastest_laps,
+                        COUNT(CASE WHEN rp.constructor_winner = rr.constructor THEN 1 END) AS correct_constructors
+                    FROM race_predictions rp
+                    LEFT JOIN race_results rr ON rr.race_number = rp.race_number
+                    WHERE rp.guild_id = %s
+                    GROUP BY rp.guild_id, rp.user_id
                 )
-                INSERT INTO leaderboard (guild_id, user_id, username, total_points)
-                SELECT
-                    guild_id,
-                    user_id,
-                    MAX(username) AS username,
-                    SUM(points) AS total_points
-                FROM combined
-                GROUP BY guild_id, user_id
-                ORDER BY total_points DESC;
-            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id))
-            
-            # Check what got inserted
-            cur.execute("""
-                SELECT user_id, username, total_points
-                FROM leaderboard
-                WHERE guild_id = %s
-                ORDER BY total_points DESC;
-            """, (guild_id,))
-            
-            results = cur.fetchall()
-            for row in results:
-                logger.info("user_id: %s, username: %s, total_points: %s", row[0], row[1], row[2])
-            
+                INSERT INTO leaderboard (guild_id, user_id, username, total_points, fully_correct_podiums, correct_podiums, correct_poles, correct_fastest_laps, correct_constructors)
+                SELECT 
+                    t.guild_id,
+                    t.user_id,
+                    t.username,
+                    t.total_points,
+                    COALESCE(tb.fully_correct_podiums, 0),
+                    COALESCE(tb.correct_podiums, 0),
+                    COALESCE(tb.correct_poles, 0),
+                    COALESCE(tb.correct_fastest_laps, 0),
+                    COALESCE(tb.correct_constructors, 0)
+                FROM total t
+                LEFT JOIN tiebreakers tb ON tb.user_id = t.user_id AND tb.guild_id = t.guild_id
+                ORDER BY 
+                    t.total_points DESC,
+                    fully_correct_podiums DESC,
+                    correct_podiums DESC,
+                    correct_poles DESC,
+                    correct_fastest_laps DESC,
+                    correct_constructors DESC;
+            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id, guild_id))
+
             conn.commit()
             cur.close()
 
-        except Exception:
+        except Exception as e:
             conn.rollback()
-            logger.exception("update_leaderboard error")
+            logger.exception("Error updating leaderboard for guild %s", guild_id)
         finally:
             conn.close()
 
 def get_top_n(guild_id, n):
-    return safe_fetch_all(
-        """
+    return safe_fetch_all("""
         SELECT username, total_points
         FROM leaderboard
         WHERE guild_id = %s
-        ORDER BY total_points DESC
+        ORDER BY 
+            total_points DESC,
+            fully_correct_podiums DESC,
+            correct_podiums DESC,
+            correct_poles DESC,
+            correct_fastest_laps DESC,
+            correct_constructors DESC
         LIMIT %s
-        """,
-        (guild_id, n)
-    )
-
+    """, (guild_id, n))
 
 def get_user_rank(guild_id, username):
-    row = safe_fetch_one("""
+    return safe_fetch_one("""
         SELECT rank, total_points FROM (
             SELECT username, total_points,
-                   RANK() OVER (ORDER BY total_points DESC) AS rank
+                   RANK() OVER (
+                       ORDER BY 
+                        total_points DESC,
+                        fully_correct_podiums DESC,
+                        correct_podiums DESC,
+                        correct_poles DESC,
+                        correct_fastest_laps DESC,
+                        correct_constructors DESC
+                   ) AS rank
             FROM leaderboard
             WHERE guild_id = %s
         ) sub
         WHERE username = %s
     """, (guild_id, username))
-    return row
 
 def save_crazy_prediction(guild_id, user_id, username, season, prediction, timestamp):
     safe_execute(

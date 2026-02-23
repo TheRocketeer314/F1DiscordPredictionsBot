@@ -807,7 +807,7 @@ async def leaderboard(interaction: discord.Interaction):
             rank, total_points = user_rank
             # Highlight user if outside top 10
             if rank > 10:
-                user_text = f"\n... \n**Your position: {rank} - {total_points} pts**"
+                user_text = f"\n\n**{rank}. {interaction.user.name} - {total_points} pts**"
             else:
                 user_text = ""  # already in top 10
         else:
