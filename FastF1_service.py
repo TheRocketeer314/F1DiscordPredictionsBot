@@ -44,8 +44,7 @@ async def refresh_race_cache(now=None, year=None):
 
     if future_races.empty:
         return None  # no upcoming races
-    next_race = future_races.iloc[0]
-    cache_race = future_races.iloc[1] if len(future_races) > 1 else None
+    next_race = future_races.iloc[0] if len(future_races) > 0 else None
 
     # Race info
     race_number = int(next_race["RoundNumber"])
@@ -75,9 +74,9 @@ async def refresh_race_cache(now=None, year=None):
     else:
         sprint_lock_time = None
 
-    if cache_race is not None:
-        cache_race_time = cache_race["Session5DateUtc"].to_pydatetime().astimezone(timezone.utc)
-        next_refresh = (cache_race_time - timedelta(days=5))
+    if next_race is not None:
+        next_race_time = next_race["Session5DateUtc"].to_pydatetime().astimezone(timezone.utc)
+        next_refresh = (next_race_time + timedelta(days=1))
     else:
         next_refresh = None
 
