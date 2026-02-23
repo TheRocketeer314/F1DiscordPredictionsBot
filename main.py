@@ -1485,4 +1485,4 @@ async def force_score_season_error(interaction: discord.Interaction, error):
             ephemeral=True
         )
 
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+bot.run(token, log_handler=handler, log_level=logging.INFO)
