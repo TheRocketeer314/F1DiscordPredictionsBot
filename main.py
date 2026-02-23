@@ -1111,7 +1111,7 @@ async def bold_predictions_publisher():
         if not race_number or not lock_time:
             return
 
-        publish_time = lock_time - timedelta(days=2)
+        publish_time = lock_time - timedelta(days=4)
         if now < publish_time or now > lock_time:
             return
 
