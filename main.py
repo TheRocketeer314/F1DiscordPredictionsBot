@@ -537,10 +537,14 @@ async def force_points(
         
         add_points(interaction.guild.id, user.id, str(user), points, reason)
         
-        if reason:
-            message = f"**{user.mention} received {points} points** for *{reason}*."
+        if points < 0:
+            script = f"**{-(points)} points deducted from {user.mention}**"
         else:
-            message = f"**{user.mention} received {points} points.**"   
+            script = f"**{user.mention} received {points} points**"
+        if reason:
+            message = f"{script} for *{reason}*."
+        else:
+            message = f"{script}"   
 
         #Send Permanent Message
         await interaction.channel.send(message)
