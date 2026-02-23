@@ -876,6 +876,8 @@ GUIDE_DICTIONARY = {
     "Guide":
                     ("/guide",
                      "View this guide.\n\n(Congratulations! If you're here, you already know how to use this!)"),
+    "Application Did Not Respond?":
+                    ("This issue may have occurred due to temporary exhaustion of the available RAM. \n\n Please try again after a couple of minutes."),
     "Want to help improve this bot?":
                     ("[View this bot's GitHub repository](https://github.com/TheRocketeer314/F1DiscordPredictionsBot) to open an issue or submit a pull request.\n\nThanks! -\n      TheRocketeer314")}
 
