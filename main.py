@@ -799,8 +799,10 @@ async def leaderboard(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         # Top 10
         top10 = get_top_n(interaction.guild.id, 10)
-        top10_text = "\n".join([f"{i+1}. {user} - {pts} pts" for i, (user, pts) in enumerate(top10)])
-
+        top10_text = "\n".join([
+            f"{i+1}. {user} - {pts} pts          ◄" if user == interaction.user.name else f"{i+1}. {user} - {pts} pts"
+            for i, (user, pts) in enumerate(top10)
+        ])
         # User rank
         user_rank = get_user_rank(interaction.guild.id, interaction.user.name)
         if user_rank:
