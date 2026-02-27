@@ -210,6 +210,19 @@ def init_db():
                     ON crazy_predictions 
                     (guild_id, timestamp DESC);
             """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scored_crazy_predictions (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                crazy_pred_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT NOT NULL,
+                difficulty TEXT NOT NULL,
+                points INTEGER NOT NULL,
+                UNIQUE (guild_id, crazy_pred_id)
+            );
+        """)
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS bold_predictions (
@@ -589,6 +602,12 @@ def update_leaderboard(guild_id):
                     SELECT guild_id, user_id, username, %s as points
                     FROM correct_bold_predictions
                     WHERE guild_id = %s
+                        
+                    UNION ALL
+
+                    SELECT guild_id, user_id, username, points
+                    FROM scored_crazy_predictions
+                    WHERE guild_id = %s
                 ),
                 total AS (
                     SELECT guild_id, user_id, MAX(username) as username, SUM(points) as total_points
@@ -631,7 +650,7 @@ def update_leaderboard(guild_id):
                     correct_poles DESC,
                     correct_fastest_laps DESC,
                     correct_constructors DESC;
-            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id, guild_id))
+            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id, guild_id, guild_id))
 
             conn.commit()
             cur.close()
@@ -708,57 +727,43 @@ def count_crazy_predictions(guild_id, user_id, season):
     )
     return result[0]["count"]
 
-def get_crazy_preds_count(guild_id, season=None):
-    if season is not None:
-        row = safe_fetch_one(
-            """
-            SELECT COUNT(*) AS count
-            FROM crazy_predictions
-            WHERE guild_id = %s AND season = %s
-            """,
-            (guild_id, season)
-        )
-    else:
-        row = safe_fetch_one(
-            """
-            SELECT COUNT(*) AS count
-            FROM crazy_predictions
-            WHERE guild_id = %s
-            """,
-            (guild_id,)
-        )
+def save_scored_crazy_prediction(guild_id, crazy_pred_id, user_id, username, difficulty, points):
+    safe_execute("""
+        INSERT INTO scored_crazy_predictions (guild_id, crazy_pred_id, user_id, username, difficulty, points)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (guild_id, crazy_pred_id) DO UPDATE SET
+            difficulty = excluded.difficulty,
+            points = excluded.points
+    """, (guild_id, crazy_pred_id, user_id, username, difficulty, points))
 
-    return row["count"] if row else 0
+def get_all_crazy_predictions_for_user(guild_id, user_id, season):
+    return safe_fetch_all("""
+        SELECT cp.id, cp.user_id, cp.username, cp.prediction, cp.timestamp,
+               scp.difficulty, scp.points
+        FROM crazy_predictions cp
+        LEFT JOIN scored_crazy_predictions scp
+            ON scp.crazy_pred_id = cp.id AND scp.guild_id = %s
+        WHERE cp.guild_id = %s AND cp.user_id = %s AND cp.season = %s
+        ORDER BY cp.timestamp ASC
+    """, (guild_id, guild_id, user_id, season))
 
+def get_all_crazy_predictions(guild_id, season):
+    return safe_fetch_all("""
+        SELECT cp.id, cp.user_id, cp.username, cp.prediction, cp.timestamp,
+               scp.difficulty, scp.points
+        FROM crazy_predictions cp
+        LEFT JOIN scored_crazy_predictions scp 
+            ON scp.crazy_pred_id = cp.id AND scp.guild_id = %s
+        WHERE cp.guild_id = %s AND cp.season = %s
+        ORDER BY cp.timestamp ASC
+    """, (guild_id, guild_id, season))
 
-def get_crazy_preds_page(guild_id, page, per_page=5, season=None):
-    offset = page * per_page
+def remove_scored_crazy_prediction(guild_id, crazy_pred_id):
+    safe_execute("""
+        DELETE FROM scored_crazy_predictions
+        WHERE guild_id = %s AND crazy_pred_id = %s
+    """, (guild_id, crazy_pred_id))
 
-    if season is not None:
-        rows = safe_fetch_all(
-            """
-            SELECT username, prediction, season, timestamp
-            FROM crazy_predictions
-            WHERE guild_id = %s AND season = %s
-            ORDER BY timestamp DESC
-            LIMIT %s OFFSET %s
-            """,
-            (guild_id, season, per_page, offset)
-        )
-    else:
-        rows = safe_fetch_all(
-            """
-            SELECT username, prediction, season, timestamp
-            FROM crazy_predictions
-            WHERE guild_id = %s
-            ORDER BY timestamp DESC
-            LIMIT %s OFFSET %s
-            """,
-            (guild_id, per_page, offset)
-        )
-
-    return rows or []
-    
 def save_bold_prediction(guild_id, user_id, race_number, username, race_name, prediction, timestamp):
     safe_execute(
         """

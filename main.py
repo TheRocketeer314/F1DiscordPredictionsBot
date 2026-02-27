@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
 import asyncio
-from config import CACHE_DIR
+from config import CRAZY_PRED_POINTS
 from pathlib import Path
 from collections import defaultdict
 from FastF1_service import refresh_race_cache, season_calender
@@ -43,8 +43,10 @@ from database import (init_db,
                       mark_season_scored,
                       save_correct_bold_prediction,
                       get_correct_bold_predictions,
-                      get_crazy_preds_page,
-                      get_crazy_preds_count)
+                      save_scored_crazy_prediction,
+                      get_all_crazy_predictions,
+                      remove_scored_crazy_prediction,
+                      get_all_crazy_predictions_for_user)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
@@ -1043,127 +1045,707 @@ async def crazy_predict(interaction: discord.Interaction, prediction: str):
     except Exception:
         logger.exception("Crazy_predict error")
 
-class CrazyPredsView(discord.ui.View):
-    def __init__(self, guild_id, user_id, total_count, per_page=5, season=None):
-        super().__init__(timeout=120)
-
+class CrazyPredsPaginationView(discord.ui.View):
+    def __init__(self, pages, page_data, guild_id, season, is_mod=False, current_page=0, selected_pred_id=None, selected_difficulty=None):
+        super().__init__(timeout=300)
+        self.pages = pages
+        self.page_data = page_data
         self.guild_id = guild_id
-        self.user_id = user_id
-        self.per_page = per_page
-        self.total_pages = math.ceil(total_count / per_page)
-        self.current_page = 0
         self.season = season
+        self.is_mod = is_mod
+        self.current_page = current_page
+        self.total_pages = len(pages)
+        self.selected_pred_id = selected_pred_id
+        self.selected_difficulty = selected_difficulty
 
-    async def build_embed(self):
-        rows = get_crazy_preds_page(
-            self.guild_id,
-            self.current_page,
-            self.per_page,
-            season=self.season
+        current_preds = page_data[current_page]
+        pred_options = [
+            discord.SelectOption(
+                label=f"{row['username']}: {row['prediction'][:50]}",
+                value=str(row['id']),
+                description="✅ Already scored" if row['difficulty'] else None,
+                default=(str(row['id']) == str(selected_pred_id))
+            )
+            for row in current_preds
+        ]
+        pred_select = discord.ui.Select(
+            placeholder="Select a prediction to score...",
+            options=pred_options,
+            row=0
         )
+        pred_select.callback = self.pred_select_callback
+        self.add_item(pred_select)
 
-        if not rows:
-            description = "No predictions found."
-        else:
-            lines = []
-            base_index = self.current_page * self.per_page
-
-            for i, row in enumerate(rows, start=1):
-                lines.append(
-                    f"**{base_index + i}.** "
-                    f"{row['username']} — "
-                    f"{row['prediction']} \n"
+        if is_mod:
+            diff_options = [
+                discord.SelectOption(
+                    label=f"{diff} ({pts} pts)",
+                    value=diff,
+                    default=(diff == selected_difficulty)
                 )
+                for diff, pts in CRAZY_PRED_POINTS.items()
+            ]
+            diff_select = discord.ui.Select(
+                placeholder="Select difficulty...",
+                options=diff_options,
+                row=1
+            )
+            diff_select.callback = self.diff_select_callback
+            self.add_item(diff_select)
 
-            description = "\n".join(lines)
+        prev = discord.ui.Button(emoji="◀️", style=discord.ButtonStyle.grey, disabled=current_page == 0, row=2)
+        prev.callback = self.prev_callback
+        self.add_item(prev)
 
-        title = f"Crazy Predictions — Season {self.season}" if self.season else "Crazy Predictions — All Seasons"
+        if is_mod:
+            score_btn = discord.ui.Button(
+                label="Score",
+                style=discord.ButtonStyle.green,
+                disabled=not (selected_pred_id and selected_difficulty),
+                row=2
+            )
+            score_btn.callback = self.score_callback
+            self.add_item(score_btn)
 
+            descore_btn = discord.ui.Button(
+                label="Remove Score",
+                style=discord.ButtonStyle.red,
+                disabled=not selected_pred_id,
+                row=2
+            )
+            descore_btn.callback = self.descore_callback
+            self.add_item(descore_btn)
+
+        next_ = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.grey, disabled=current_page == self.total_pages - 1, row=2)
+        next_.callback = self.next_callback
+        self.add_item(next_)
+
+    def get_embed(self):
         embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blue()
+            title=f"🤯 Crazy Predictions — {self.season}",
+            description=self.pages[self.current_page],
+            color=discord.Color.red()
         )
-
-        embed.set_footer(
-            text=f"Page {self.current_page + 1} of {self.total_pages}"
-        )
-
+        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
         return embed
 
-    async def update_message(self, interaction):
-        self.previous.disabled = self.current_page == 0
-        self.next.disabled = self.current_page >= self.total_pages - 1
+    async def pred_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = CrazyPredsPaginationView(
+                self.pages, self.page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page,
+                int(interaction.data['values'][0]), self.selected_difficulty
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("pred_select_callback error")
 
-        embed = await self.build_embed()
-        await interaction.edit_original_response(embed=embed, view=self)
+    async def diff_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = CrazyPredsPaginationView(
+                self.pages, self.page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page,
+                self.selected_pred_id, interaction.data['values'][0]
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("diff_select_callback error")
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def score_callback(self, interaction: discord.Interaction):
+        try:
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message("❌ You don't have permission to score predictions.", ephemeral=True)
+                return
+
+            pred_row = None
+            for row in self.page_data[self.current_page]:
+                if row['id'] == self.selected_pred_id:
+                    pred_row = row
+                    break
+
+            if not pred_row:
+                await interaction.response.send_message("❌ Prediction not found.", ephemeral=True)
+                return
+
+            points = CRAZY_PRED_POINTS[self.selected_difficulty]
+
+            save_scored_crazy_prediction(
+                self.guild_id,
+                self.selected_pred_id,
+                pred_row['user_id'],
+                pred_row['username'],
+                self.selected_difficulty,
+                points
+            )
+
+            update_leaderboard(self.guild_id)
+
+            rows = get_all_crazy_predictions(self.guild_id, self.season)
+            pages, page_data = build_crazy_pred_pages(rows)
+
+            new_view = CrazyPredsPaginationView(
+                pages, page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page, None, None
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+
+            channel_id = get_prediction_channel(self.guild_id)
+            if channel_id:
+                channel = interaction.guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                if channel:
+                    await channel.send(
+                        f"🎯 **Crazy Prediction Scored!**\n"
+                        f"**{pred_row['username']}**'s prediction came true:\n"
+                        f"> {pred_row['prediction']}\n"
+                        f"Difficulty: **{self.selected_difficulty}** — **{points} points** awarded!"
+                    )
+
+        except Exception:
+            logger.exception("score_callback error")
+
+    async def descore_callback(self, interaction: discord.Interaction):
+        try:
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+
+            if not self.selected_pred_id:
+                await interaction.response.send_message("❌ No prediction selected.", ephemeral=True)
+                return
+
+            remove_scored_crazy_prediction(self.guild_id, self.selected_pred_id)
+            update_leaderboard(self.guild_id)
+
+            rows = get_all_crazy_predictions(self.guild_id, self.season)
+            pages, page_data = build_crazy_pred_pages(rows)
+
+            new_view = CrazyPredsPaginationView(
+                pages, page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page, None, None
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+
+        except Exception:
+            logger.exception("descore_callback error")
+
+    async def prev_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = CrazyPredsPaginationView(
+                self.pages, self.page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page - 1, None, None
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("prev_callback error")
+
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = CrazyPredsPaginationView(
+                self.pages, self.page_data, self.guild_id, self.season,
+                self.is_mod, self.current_page + 1, None, None
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("next_callback error")
+
+
+def build_crazy_pred_pages(rows):
+    items_per_page = 5
+    pages = []
+    page_data = []
+    for i in range(0, len(rows), items_per_page):
+        chunk = rows[i:i + items_per_page]
+        lines = []
+        for j, row in enumerate(chunk, start=i+1):
+            scored = row['difficulty'] is not None
+            tick = "✅" if scored else "⬜"
+            score_info = f" — {row['difficulty']} ({row['points']} pts)" if scored else ""
+            lines.append(
+                f"{tick} **{j}.** **{row['username']}** _({format_timestamp(row['timestamp'])})_{score_info}\n"
+                f"> {row['prediction']}\n"
+            )
+        pages.append("\n\n".join(lines))
+        page_data.append(chunk)
+    return pages, page_data
+
+
+@bot.tree.command(name="view_all_crazy_predictions", description="View all crazy predictions for this server")
+@app_commands.describe(season="Season year (defaults to current season)")
+async def view_all_crazy_predictions(interaction: discord.Interaction, season: int = None):
+    try:
         await interaction.response.defer(ephemeral=True)
-        if interaction.user.id != self.user_id:
-            await interaction.followup.send("Not your menu.", ephemeral=True)
+
+        if season is None:
+            season = SEASON
+
+        rows = get_all_crazy_predictions(interaction.guild.id, season)
+
+        if not rows:
+            await interaction.followup.send(f"❌ No crazy predictions found for **{season}**.", ephemeral=True)
             return
 
-        if self.current_page > 0:
-            self.current_page -= 1
-            await self.update_message(interaction)
+        is_mod = interaction.user.guild_permissions.manage_guild
+        pages, page_data = build_crazy_pred_pages(rows)
+        view = CrazyPredsPaginationView(pages, page_data, interaction.guild.id, season, is_mod=is_mod)
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user.id != self.user_id:
-            await interaction.followup.send("Not your menu.", ephemeral=True)
-            return
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            await self.update_message(interaction)
+    except Exception:
+        logger.exception("view_all_crazy_predictions error")
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
+class MassCrazyScoreView(discord.ui.View):
+    def __init__(self, guild_id, rows, season, current_page=0, selected_pred_ids=None, selected_difficulty=None):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.rows = rows
+        self.season = season
+        self.current_page = current_page
+        self.selected_pred_ids = selected_pred_ids or []
+        self.selected_difficulty = selected_difficulty
+        self.items_per_page = 25
+        self.total_pages = max(1, (len(rows) + self.items_per_page - 1) // self.items_per_page)
 
-@bot.tree.command(
-    name="view_all_crazy_predictions",
-    description="View crazy predictions for this server (optionally filter by season)."
-)
-@app_commands.describe(season="Filter predictions by season (optional)")
-async def crazy_preds(interaction: discord.Interaction, season: int = None):
-    await interaction.response.defer(ephemeral=True)
+        start = current_page * self.items_per_page
+        end = start + self.items_per_page
+        page_rows = rows[start:end]
 
-    if season is None:
-        latest = safe_fetch_one(
-            "SELECT MAX(season) AS latest_season FROM crazy_predictions WHERE guild_id = %s",
-            (interaction.guild.id,)
+        pred_options = [
+            discord.SelectOption(
+                label=f"{row['username']}: {row['prediction'][:50]}",
+                value=str(row['id']),
+                description="✅ Already scored" if row['difficulty'] else None,
+                default=(row['id'] in self.selected_pred_ids)
+            )
+            for row in page_rows
+        ]
+        pred_select = discord.ui.Select(
+            placeholder=f"Select predictions (page {current_page + 1}/{self.total_pages})...",
+            options=pred_options,
+            min_values=1,
+            max_values=len(pred_options),
+            row=0
         )
-        season = latest["latest_season"] if latest and latest["latest_season"] else None
+        pred_select.callback = self.pred_select_callback
+        self.add_item(pred_select)
 
-    total = get_crazy_preds_count(interaction.guild.id, season=season)
+        diff_options = [
+            discord.SelectOption(
+                label=f"{diff} ({pts} pts)",
+                value=diff,
+                default=(diff == selected_difficulty)
+            )
+            for diff, pts in CRAZY_PRED_POINTS.items()
+        ]
+        diff_select = discord.ui.Select(
+            placeholder="Select difficulty...",
+            options=diff_options,
+            row=1
+        )
+        diff_select.callback = self.diff_select_callback
+        self.add_item(diff_select)
 
-    if total == 0:
-        return await interaction.followup.send("No crazy predictions found.", ephemeral=True)
+        score_btn = discord.ui.Button(
+            label=f"Score Selected ({len(self.selected_pred_ids)})",
+            style=discord.ButtonStyle.green,
+            disabled=not (self.selected_pred_ids and self.selected_difficulty),
+            row=2
+        )
+        score_btn.callback = self.submit_callback
+        self.add_item(score_btn)
 
-    view = CrazyPredsView(
-        guild_id=interaction.guild.id,
-        user_id=interaction.user.id,
-        total_count=total,
-        per_page=5,
-        season=season 
-    )
+        unscore_btn = discord.ui.Button(
+            label="Remove Score",
+            style=discord.ButtonStyle.red,
+            disabled=not self.selected_pred_ids,
+            row=2
+        )
+        unscore_btn.callback = self.unscore_callback
+        self.add_item(unscore_btn)
 
-    embed = await view.build_embed()
+        prev = discord.ui.Button(
+            emoji="◀️", style=discord.ButtonStyle.grey,
+            disabled=current_page == 0, row=3
+        )
+        prev.callback = self.prev_callback
+        self.add_item(prev)
 
-    view.previous.disabled = True
-    view.next.disabled = view.total_pages <= 1
+        next_ = discord.ui.Button(
+            emoji="▶️", style=discord.ButtonStyle.grey,
+            disabled=current_page == self.total_pages - 1, row=3
+        )
+        next_.callback = self.next_callback
+        self.add_item(next_)
 
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    def get_content(self):
+        selected_count = len(self.selected_pred_ids)
+        diff_text = f" | Difficulty: **{self.selected_difficulty} ({CRAZY_PRED_POINTS[self.selected_difficulty]} pts)**" if self.selected_difficulty else ""
+        return (
+            f"Select predictions to score across pages — selections carry over between pages!\n"
+            f"**{selected_count} prediction(s) selected**{diff_text}\n"
+            f"Page {self.current_page + 1}/{self.total_pages}"
+        )
+
+    async def pred_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_ids = [int(v) for v in interaction.data['values']]
+            start = self.current_page * self.items_per_page
+            end = start + self.items_per_page
+            current_page_ids = {row['id'] for row in self.rows[start:end]}
+            other_page_ids = [pid for pid in self.selected_pred_ids if pid not in current_page_ids]
+            merged_ids = other_page_ids + new_ids
+            new_view = MassCrazyScoreView(
+                self.guild_id, self.rows, self.season,
+                self.current_page, merged_ids, self.selected_difficulty
+            )
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("MassCrazyScoreView pred_select_callback error")
+
+    async def diff_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = MassCrazyScoreView(
+                self.guild_id, self.rows, self.season,
+                self.current_page, self.selected_pred_ids,
+                interaction.data['values'][0]
+            )
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("MassCrazyScoreView diff_select_callback error")
+
+    async def prev_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = MassCrazyScoreView(
+                self.guild_id, self.rows, self.season,
+                self.current_page - 1, self.selected_pred_ids, self.selected_difficulty
+            )
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("MassCrazyScoreView prev_callback error")
+
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = MassCrazyScoreView(
+                self.guild_id, self.rows, self.season,
+                self.current_page + 1, self.selected_pred_ids, self.selected_difficulty
+            )
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("MassCrazyScoreView next_callback error")
+
+    async def submit_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                return
+
+            points = CRAZY_PRED_POINTS[self.selected_difficulty]
+            scored_users = []
+
+            for pred_id in self.selected_pred_ids:
+                pred_row = next((r for r in self.rows if r['id'] == pred_id), None)
+                if not pred_row:
+                    continue
+                save_scored_crazy_prediction(
+                    self.guild_id, pred_id,
+                    pred_row['user_id'], pred_row['username'],
+                    self.selected_difficulty, points
+                )
+                scored_users.append(f"**{pred_row['username']}**: {pred_row['prediction']}")
+
+            update_leaderboard(self.guild_id)
+
+            channel_id = get_prediction_channel(self.guild_id)
+            if channel_id:
+                try:
+                    channel = interaction.guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    if channel:
+                        users_text = "\n".join(f"> {u}" for u in scored_users)
+                        await channel.send(
+                            f"🎯 **Crazy Predictions Scored!**\n"
+                            f"The following predictions came true:\n"
+                            f"{users_text}\n"
+                            f"Difficulty: **{self.selected_difficulty}** — **{points} points** each!"
+                        )
+                except discord.NotFound:
+                    logger.exception("Channel not found when sending mass crazy score results")
+
+            await interaction.followup.send(
+                f"✅ Scored {len(scored_users)} predictions at **{self.selected_difficulty}** difficulty ({points} pts each)!",
+                ephemeral=True
+            )
+            self.stop()
+
+        except Exception:
+            logger.exception("MassCrazyScoreView submit_callback error")
+
+    async def unscore_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                return
+
+            for pred_id in self.selected_pred_ids:
+                remove_scored_crazy_prediction(self.guild_id, pred_id)
+
+            update_leaderboard(self.guild_id)
+
+            rows = get_all_crazy_predictions(self.guild_id, self.season)
+            new_view = MassCrazyScoreView(self.guild_id, rows, self.season, self.current_page, [], None)
+            await interaction.edit_original_response(content=new_view.get_content(), view=new_view)
+            await interaction.followup.send(
+                f"✅ Removed scores for {len(self.selected_pred_ids)} predictions!",
+                ephemeral=True
+            )
+
+        except Exception:
+            logger.exception("MassCrazyScoreView unscore_callback error")
+
+
+@bot.tree.command(name="mass_score_crazy_predictions", description="Score multiple crazy predictions at once (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(season="Season year (defaults to current season)")
+async def mass_score_crazy_predictions(interaction: discord.Interaction, season: int = None):
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        if season is None:
+            season = SEASON
+
+        rows = get_all_crazy_predictions(interaction.guild.id, season)
+        if not rows:
+            await interaction.followup.send(f"❌ No crazy predictions found for **{season}**.", ephemeral=True)
+            return
+
+        view = MassCrazyScoreView(interaction.guild.id, rows, season)
+        await interaction.followup.send(content=view.get_content(), view=view, ephemeral=True)
+
+    except Exception:
+        logger.exception("mass_score_crazy_predictions error")
+
+@mass_score_crazy_predictions.error
+async def mass_score_crazy_predictions_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+
+
+class UserCrazyPredsView(discord.ui.View):
+    def __init__(self, guild_id, rows, target_user, season, is_mod=False, selected_pred_id=None, selected_difficulty=None):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.rows = rows
+        self.target_user = target_user
+        self.season = season
+        self.is_mod = is_mod
+        self.selected_pred_id = selected_pred_id
+        self.selected_difficulty = selected_difficulty
+
+        pred_options = [
+            discord.SelectOption(
+                label=f"{i+1}. {row['prediction'][:70]}",
+                value=str(row['id']),
+                description="✅ Already scored" if row['difficulty'] else None,
+                default=(str(row['id']) == str(selected_pred_id))
+            )
+            for i, row in enumerate(rows)
+        ]
+        pred_select = discord.ui.Select(
+            placeholder="Select a prediction...",
+            options=pred_options,
+            row=0
+        )
+        pred_select.callback = self.pred_select_callback
+        self.add_item(pred_select)
+
+        if is_mod:
+            diff_options = [
+                discord.SelectOption(
+                    label=f"{diff} ({pts} pts)",
+                    value=diff,
+                    default=(diff == selected_difficulty)
+                )
+                for diff, pts in CRAZY_PRED_POINTS.items()
+            ]
+            diff_select = discord.ui.Select(
+                placeholder="Select difficulty...",
+                options=diff_options,
+                row=1
+            )
+            diff_select.callback = self.diff_select_callback
+            self.add_item(diff_select)
+
+            score_btn = discord.ui.Button(
+                label="Score",
+                style=discord.ButtonStyle.green,
+                disabled=not (selected_pred_id and selected_difficulty),
+                row=2
+            )
+            score_btn.callback = self.score_callback
+            self.add_item(score_btn)
+
+            unscore_btn = discord.ui.Button(
+                label="Remove Score",
+                style=discord.ButtonStyle.red,
+                disabled=not selected_pred_id,
+                row=2
+            )
+            unscore_btn.callback = self.unscore_callback
+            self.add_item(unscore_btn)
+
+    def get_embed(self):
+        count = len(self.rows)
+        total_points = sum(row['points'] for row in self.rows if row['points'])
+        embed = discord.Embed(
+            title=f"🤯 Crazy Predictions by {self.target_user.display_name} — {self.season}",
+            description=f"{count} prediction(s) | {total_points} pts earned",
+            color=discord.Color.red()
+        )
+        for i, row in enumerate(self.rows, start=1):
+            scored = row['difficulty'] is not None
+            tick = "✅" if scored else "⬜"
+            score_info = f" — {row['difficulty']} ({row['points']} pts)" if scored else ""
+            embed.add_field(
+                name=f"{tick} {i}. {format_timestamp(row['timestamp'])}{score_info}",
+                value=f"> {row['prediction']}",
+                inline=False
+            )
+        return embed
+
+    async def pred_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = UserCrazyPredsView(
+                self.guild_id, self.rows, self.target_user, self.season,
+                self.is_mod, int(interaction.data['values'][0]), self.selected_difficulty
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("UserCrazyPredsView pred_select_callback error")
+
+    async def diff_select_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = UserCrazyPredsView(
+                self.guild_id, self.rows, self.target_user, self.season,
+                self.is_mod, self.selected_pred_id, interaction.data['values'][0]
+            )
+            await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
+        except Exception:
+            logger.exception("UserCrazyPredsView diff_select_callback error")
+
+    async def score_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                return
+
+            pred_row = next((r for r in self.rows if r['id'] == self.selected_pred_id), None)
+            if not pred_row:
+                await interaction.followup.send("❌ Prediction not found.", ephemeral=True)
+                return
+
+            points = CRAZY_PRED_POINTS[self.selected_difficulty]
+            save_scored_crazy_prediction(
+                self.guild_id, self.selected_pred_id,
+                pred_row['user_id'], pred_row['username'],
+                self.selected_difficulty, points
+            )
+            update_leaderboard(self.guild_id)
+
+            rows = get_all_crazy_predictions_for_user(self.guild_id, self.target_user.id, self.season)
+            new_view = UserCrazyPredsView(
+                self.guild_id, rows, self.target_user, self.season,
+                self.is_mod, None, None
+            )
+            await interaction.edit_original_response(embed=new_view.get_embed(), view=new_view)
+
+            channel_id = get_prediction_channel(self.guild_id)
+            if channel_id:
+                try:
+                    channel = interaction.guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    if channel:
+                        await channel.send(
+                            f"🎯 **Crazy Prediction Scored!**\n"
+                            f"**{pred_row['username']}**'s prediction came true:\n"
+                            f"> {pred_row['prediction']}\n"
+                            f"Difficulty: **{self.selected_difficulty}** — **{points} points** awarded!"
+                        )
+                except discord.NotFound:
+                    logger.exception("Channel not found")
+
+            await interaction.followup.send("✅ Scored!", ephemeral=True)
+
+        except Exception:
+            logger.exception("UserCrazyPredsView score_callback error")
+
+    async def unscore_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                return
+
+            remove_scored_crazy_prediction(self.guild_id, self.selected_pred_id)
+            update_leaderboard(self.guild_id)
+
+            rows = get_all_crazy_predictions_for_user(self.guild_id, self.target_user.id, self.season)
+            new_view = UserCrazyPredsView(
+                self.guild_id, rows, self.target_user, self.season,
+                self.is_mod, None, None
+            )
+            await interaction.edit_original_response(embed=new_view.get_embed(), view=new_view)
+            await interaction.followup.send("✅ Score removed!", ephemeral=True)
+
+        except Exception:
+            logger.exception("UserCrazyPredsView unscore_callback error")
+
+
+@bot.tree.command(name="score_crazy_predictions", description="Score a user's crazy predictions (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(user="The user whose predictions to score", season="Season year (defaults to current season)")
+async def score_crazy_predictions(interaction: discord.Interaction, user: discord.Member, season: int = None):
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        if season is None:
+            season = SEASON
+
+        rows = get_all_crazy_predictions_for_user(interaction.guild.id, user.id, season)
+        if not rows:
+            await interaction.followup.send(
+                f"❌ **{user.display_name}** has no crazy predictions for **{season}**.",
+                ephemeral=True
+            )
+            return
+
+        view = UserCrazyPredsView(interaction.guild.id, rows, user, season, is_mod=True)
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
+
+    except Exception:
+        logger.exception("score_crazy_predictions error")
+
+@score_crazy_predictions.error
+async def score_crazy_predictions_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+
 
 def format_timestamp(dt):
     try:
         return dt.strftime("%d %b %Y, %H:%M UTC")
     except Exception:
         logger.exception("format_timestamp error")
+
 
 def format_crazy_predictions(username, rows):
     try:
@@ -1175,9 +1757,11 @@ def format_crazy_predictions(username, rows):
         for i, row in enumerate(rows, start=1):
             prediction = row["prediction"]
             timestamp = row["timestamp"]
-
+            scored = row["difficulty"] is not None
+            tick = "✅" if scored else "⬜"
+            score_info = f" — {row['difficulty']} ({row['points']} pts)" if scored else ""
             lines.append(
-                f"**{i}.** _({format_timestamp(timestamp)})_\n"
+                f"{tick} **{i}.** _({format_timestamp(timestamp)})_{score_info}\n"
                 f"> {prediction}\n"
             )
 
@@ -1186,23 +1770,36 @@ def format_crazy_predictions(username, rows):
     except Exception:
         logger.exception("format_crazy_predictions error")
 
-@bot.tree.command(
-    name="view_crazy_predictions",
-    description="View a user's crazy season predictions"
-)
-async def crazy_predictions(interaction: discord.Interaction, user: discord.User):
+
+@bot.tree.command(name="view_crazy_predictions", description="View a user's crazy season predictions")
+@app_commands.describe(user="The user to view", season="Season year (defaults to current season)")
+async def crazy_predictions(interaction: discord.Interaction, user: discord.Member, season: int = None):
     try:
         await interaction.response.defer(ephemeral=True)
-        global SEASON
-        season = SEASON
 
-        rows = get_crazy_predictions(interaction.guild.id, user.id, season)
+        if season is None:
+            season = SEASON
+
+        rows = get_all_crazy_predictions_for_user(interaction.guild.id, user.id, season)
+
+        if not rows:
+            await interaction.followup.send(
+                f"❌ **{user.display_name}** has made no crazy predictions for **{season}**.",
+                ephemeral=True
+            )
+            return
+
         message = format_crazy_predictions(user.display_name, rows)
 
+        if not message:
+            await interaction.followup.send("❌ Error formatting predictions.", ephemeral=True)
+            return
+
         await interaction.followup.send(message)
+
     except Exception:
         logger.exception("crazy_predictions error")
-
+        
 @bot.tree.command(
     name="race_bold_predict",
     description="Submit or update your bold prediction for the next race"
