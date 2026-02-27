@@ -655,8 +655,8 @@ async def constructor_prediction_cmd(interaction: discord.Interaction):
         )
 
     except Exception:
-        logger.exception("constructor_prediction_cmd error")
-@bot.tree.command(name="prediction_lock", description="Manually Lock/Unlock predictions (MODS ONLY)")
+        logger.exception("constructor_prediction_cmd error")    
+
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.choices(
     prediction=[
@@ -881,10 +881,12 @@ GUIDE_DICTIONARY = {
     "View Predictions":
                     {"/view_race_bold_predictions":
                      "View all bold predictions for a selected race.",
+                     "/view_correct_bold_predictions":
+                     "View all the correct bold predictions by a user.",
                      "/view_crazy_predictions":
                      "View all crazy predictions given by a selected user.",
-                     "/view_correct_bold_predictions":
-                     "View all the correct bold predictions by a user."},
+                     "/view_all_crazy_predictions":
+                     "View all crazy predictions for this server (optionally filter by season)."},
     "Leaderboard":
                     {"/leaderboard":
                      "View the leaderboard for your server.",
