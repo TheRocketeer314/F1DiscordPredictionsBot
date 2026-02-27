@@ -888,7 +888,7 @@ GUIDE_DICTIONARY = {
                      "/view_crazy_predictions":
                      "View all crazy predictions given by a selected user.",
                      "/view_all_crazy_predictions":
-                     "View all crazy predictions for this server (optionally filter by season)."},
+                     "View all crazy predictions for this server (optionally filter by season).\n\nMods can also score crazy predictions with this."},
     "Leaderboard":
                     {"/leaderboard":
                      "View the leaderboard for your server.",
@@ -910,7 +910,11 @@ GUIDE_DICTIONARY = {
                      "/force_score_season":
                      "Force scoring of the current season.",
                      "/correct_bold_predictions":
-                     "Score the correct bold predictions for a race."},
+                     "Score the correct bold predictions for a race.",
+                     "/score_crazy_predictions":
+                     "Score a user's crazy predictions in a server (optionally filter by season).",
+                     "/mass_score_crazy_predictions":
+                     "Score multiple crazy predictions in a server at once (optionally filter by season)."},
     "Set Channel":
                     ("/set_channel",
                      "**MODS ONLY**\n\nSet the channel in which to receive messages.\n\nThis should ideally be the channel in which the prediction competetition will be carried out"),
@@ -1799,7 +1803,7 @@ async def crazy_predictions(interaction: discord.Interaction, user: discord.Memb
 
     except Exception:
         logger.exception("crazy_predictions error")
-        
+
 @bot.tree.command(
     name="race_bold_predict",
     description="Submit or update your bold prediction for the next race"
