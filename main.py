@@ -1072,7 +1072,7 @@ class CrazyPredsView(discord.ui.View):
                 lines.append(
                     f"**{base_index + i}.** "
                     f"{row['username']} — "
-                    f"{row['prediction']} "
+                    f"{row['prediction']} \n"
                 )
 
             description = "\n".join(lines)
