@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import os
+import math
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
@@ -41,7 +42,9 @@ from database import (init_db,
                       mark_race_scored,
                       mark_season_scored,
                       save_correct_bold_prediction,
-                      get_correct_bold_predictions)
+                      get_correct_bold_predictions,
+                      get_crazy_preds_page,
+                      get_crazy_preds_count)
 
 from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
@@ -565,60 +568,94 @@ async def force_points_error(interaction: discord.Interaction, error):
             )
     except Exception:
         logger.exception("force_points_error error")
+        return []
 
 #Constructors Predict
-async def constructor_autocomplete(interaction: discord.Interaction, current: str):
-    try:
-        # Return up to 25 matching constructors
-        return [
-            app_commands.Choice(name=str(cons), value=str(cons))
-            for cons in CONSTRUCTORS
-            if current.lower() in str(cons).lower()
-        ][:25]
-    except Exception:
-        logger.exception("Constructor autocomplete error")
+class ConstructorView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        for c in CONSTRUCTORS:
+            self.add_item(ConstructorButton(c))
+        
+        now = get_now()
+        if not predictions_open(guild_id, now, RACE_CACHE):
+            for child in self.children:
+                child.disabled = True
 
-async def constructor_prediction(interaction: discord.Interaction, constructor: str):
+class ConstructorButton(discord.ui.Button):
+    def __init__(self, constructor):
+        super().__init__(label=constructor, style=discord.ButtonStyle.grey)
+        self.constructor = constructor
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            now = get_now()
+
+            if not predictions_open(interaction.guild.id, now, RACE_CACHE):
+                for child in self.view.children:
+                    child.disabled = True
+                await interaction.edit_original_response(
+                    content="🔒 Predictions are closed.",
+                    view=self.view
+                )
+                return
+
+            save_constructor_prediction(
+                interaction.guild.id,
+                interaction.user.id,
+                interaction.user.name,
+                int(RACE_CACHE.get("race_number")),
+                RACE_CACHE.get("race_name"),
+                self.constructor
+            )
+
+            # Highlight selected button
+            for child in self.view.children:
+                if isinstance(child, ConstructorButton):
+                    child.style = discord.ButtonStyle.grey
+            self.style = discord.ButtonStyle.green
+
+            await interaction.edit_original_response(
+                content=f"✅ Your prediction for the winning constructor is **{self.constructor}**.",
+                view=self.view
+            )
+
+        except Exception:
+            logger.exception("ConstructorButton callback error")
+
+@bot.tree.command(name="constructor_predict", description="Predict the winning constructor")
+async def constructor_prediction_cmd(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
         now = get_now()
 
-        # Use your existing function to check if predictions are open
         if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-            try:
-                await interaction.followup.send(
-                "⛔ Predictions are closed.",
-                ephemeral=True
-            )
-            except Exception:
-                logger.exception("Constructor prediction error")
+            await interaction.followup.send("⛔ Predictions are closed.", ephemeral=True)
             return
 
-        # Save prediction (overwrite if user already submitted)
-        save_constructor_prediction(
-            interaction.guild.id,
-            interaction.user.id,
-            interaction.user.name,
-            int(RACE_CACHE.get("race_number")),
-            RACE_CACHE.get("race_name"),
-            constructor
-    )
+        # Check if user already has a prediction and highlight it
+        existing = safe_fetch_one(
+            "SELECT constructor_winner FROM race_predictions WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+            (interaction.guild.id, interaction.user.id, int(RACE_CACHE.get("race_number")))
+        )
 
+        view = ConstructorView(interaction.guild.id)
+
+        if existing and existing['constructor_winner']:
+            for child in view.children:
+                if isinstance(child, ConstructorButton) and child.constructor == existing['constructor_winner']:
+                    child.style = discord.ButtonStyle.green
 
         await interaction.followup.send(
-            f"✅ {interaction.user.mention}, your prediction for the winning constructor is **{constructor}**.",
+            f"Select the constructor you think will score the most points at the **{RACE_CACHE.get('race_name')}**:",
+            view=view,
             ephemeral=True
         )
 
     except Exception:
-        logger.exception("Constructor prediction error")
-
-@bot.tree.command(name="constructor_predict", description="Predict the winning constructor")
-@app_commands.describe(constructor=f"Select your most-scoring constructor")
-@app_commands.autocomplete(constructor=constructor_autocomplete)
-async def constructor_prediction_cmd(interaction: discord.Interaction, constructor: str):
-    await constructor_prediction(interaction, constructor)
-
+        logger.exception("constructor_prediction_cmd error")
 @bot.tree.command(name="prediction_lock", description="Manually Lock/Unlock predictions (MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.choices(
@@ -1003,6 +1040,122 @@ async def crazy_predict(interaction: discord.Interaction, prediction: str):
 
     except Exception:
         logger.exception("Crazy_predict error")
+
+class CrazyPredsView(discord.ui.View):
+    def __init__(self, guild_id, user_id, total_count, per_page=5, season=None):
+        super().__init__(timeout=120)
+
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.per_page = per_page
+        self.total_pages = math.ceil(total_count / per_page)
+        self.current_page = 0
+        self.season = season
+
+    async def build_embed(self):
+        rows = get_crazy_preds_page(
+            self.guild_id,
+            self.current_page,
+            self.per_page,
+            season=self.season
+        )
+
+        if not rows:
+            description = "No predictions found."
+        else:
+            lines = []
+            base_index = self.current_page * self.per_page
+
+            for i, row in enumerate(rows, start=1):
+                lines.append(
+                    f"**{base_index + i}.** "
+                    f"{row['username']} — "
+                    f"{row['prediction']} "
+                )
+
+            description = "\n".join(lines)
+
+        title = f"Crazy Predictions — Season {self.season}" if self.season else "Crazy Predictions — All Seasons"
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.blue()
+        )
+
+        embed.set_footer(
+            text=f"Page {self.current_page + 1} of {self.total_pages}"
+        )
+
+        return embed
+
+    async def update_message(self, interaction):
+        self.previous.disabled = self.current_page == 0
+        self.next.disabled = self.current_page >= self.total_pages - 1
+
+        embed = await self.build_embed()
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self.user_id:
+            await interaction.followup.send("Not your menu.", ephemeral=True)
+            return
+
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_message(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self.user_id:
+            await interaction.followup.send("Not your menu.", ephemeral=True)
+            return
+
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            await self.update_message(interaction)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+@bot.tree.command(
+    name="view_all_crazy_predictions",
+    description="View crazy predictions for this server (optionally filter by season)."
+)
+@app_commands.describe(season="Filter predictions by season (optional)")
+async def crazy_preds(interaction: discord.Interaction, season: int = None):
+    await interaction.response.defer(ephemeral=True)
+
+    if season is None:
+        latest = safe_fetch_one(
+            "SELECT MAX(season) AS latest_season FROM crazy_predictions WHERE guild_id = %s",
+            (interaction.guild.id,)
+        )
+        season = latest["latest_season"] if latest and latest["latest_season"] else None
+
+    total = get_crazy_preds_count(interaction.guild.id, season=season)
+
+    if total == 0:
+        return await interaction.followup.send("No crazy predictions found.", ephemeral=True)
+
+    view = CrazyPredsView(
+        guild_id=interaction.guild.id,
+        user_id=interaction.user.id,
+        total_count=total,
+        per_page=5,
+        season=season 
+    )
+
+    embed = await view.build_embed()
+
+    view.previous.disabled = True
+    view.next.disabled = view.total_pages <= 1
+
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 def format_timestamp(dt):
     try:

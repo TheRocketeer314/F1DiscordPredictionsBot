@@ -206,6 +206,11 @@ def init_db():
             )
         """)
 
+        cur.execute("""CREATE INDEX IF NOT EXISTS idx_crazy_predictions_guild_timestamp
+                    ON crazy_predictions 
+                    (guild_id, timestamp DESC);
+            """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS bold_predictions (
                 guild_id BIGINT NOT NULL,
@@ -703,6 +708,57 @@ def count_crazy_predictions(guild_id, user_id, season):
     )
     return result[0]["count"]
 
+def get_crazy_preds_count(guild_id, season=None):
+    if season is not None:
+        row = safe_fetch_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM crazy_predictions
+            WHERE guild_id = %s AND season = %s
+            """,
+            (guild_id, season)
+        )
+    else:
+        row = safe_fetch_one(
+            """
+            SELECT COUNT(*) AS count
+            FROM crazy_predictions
+            WHERE guild_id = %s
+            """,
+            (guild_id,)
+        )
+
+    return row["count"] if row else 0
+
+
+def get_crazy_preds_page(guild_id, page, per_page=5, season=None):
+    offset = page * per_page
+
+    if season is not None:
+        rows = safe_fetch_all(
+            """
+            SELECT username, prediction, season, timestamp
+            FROM crazy_predictions
+            WHERE guild_id = %s AND season = %s
+            ORDER BY timestamp DESC
+            LIMIT %s OFFSET %s
+            """,
+            (guild_id, season, per_page, offset)
+        )
+    else:
+        rows = safe_fetch_all(
+            """
+            SELECT username, prediction, season, timestamp
+            FROM crazy_predictions
+            WHERE guild_id = %s
+            ORDER BY timestamp DESC
+            LIMIT %s OFFSET %s
+            """,
+            (guild_id, per_page, offset)
+        )
+
+    return rows or []
+    
 def save_bold_prediction(guild_id, user_id, race_number, username, race_name, prediction, timestamp):
     safe_execute(
         """
