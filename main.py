@@ -312,20 +312,20 @@ async def whatsnew(interaction: discord.Interaction):
     features, fixes = get_changes()
 
     embed = discord.Embed(
-        title=f"🚀 What's New in {version}",
+        title=f"What's New in {version}",
         color=discord.Color.blue()
     )
 
     if features:
         embed.add_field(
-            name="✨ New Features",
+            name="New Features",
             value="\n".join(f"• {f}" for f in features[:5]),
             inline=False
         )
 
     if fixes:
         embed.add_field(
-            name="🐛 Bug Fixes",
+            name="Bug Fixes",
             value="\n".join(f"• {f}" for f in fixes[:5]),
             inline=False
         )
@@ -2221,8 +2221,10 @@ async def toggle_bold_predictions(interaction: discord.Interaction):
 
         if currently_opted_out:
             await interaction.followup.send("✅ Bold prediction messages are now **enabled** for this server.", ephemeral=True)
+            await interaction.channel.send("✅ Bold prediction messages are now **enabled** for this server.")
         else:
             await interaction.followup.send("✅ Bold prediction messages are now **disabled** for this server.", ephemeral=True)
+            await interaction.channel.send("✅ Bold prediction messages are now **disabled** for this server.")
 
     except Exception:
         logger.exception("toggle_bold_predictions error")
