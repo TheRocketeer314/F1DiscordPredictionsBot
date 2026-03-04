@@ -408,12 +408,13 @@ def save_sprint_predictions(guild_id, user_id, username, race_number, race_name,
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
-            race_name = excluded.race_name,
             username = excluded.username,
-            sprint_winner = excluded.sprint_winner,
-            sprint_pole = excluded.sprint_pole
+            race_name = excluded.race_name,
+            sprint_winner = COALESCE(excluded.sprint_winner, race_predictions.sprint_winner),
+            sprint_pole = COALESCE(excluded.sprint_pole, race_predictions.sprint_pole)
         """,
-        (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole))
+        (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole)
+    )
     
 def fetch_sprint_preds(guild_id, user_id, race_number):
         return safe_fetch_one(

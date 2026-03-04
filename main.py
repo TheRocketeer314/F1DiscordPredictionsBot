@@ -332,7 +332,7 @@ async def whatsnew(interaction: discord.Interaction):
 # ─── Step 1: Podium Prediction View ─────────────────────────────────────────
 
 class PodiumPredictionView(discord.ui.View):
-    def __init__(self, guild_id, user_id, race_number, race_name, preds=None, closed=False):
+    def __init__(self, guild_id, user_id, race_number, race_name, preds=None, closed=False, is_sprint=False):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.user_id = user_id
@@ -340,6 +340,7 @@ class PodiumPredictionView(discord.ui.View):
         self.race_name = race_name
         self.preds = preds or [None, None, None]
         self.closed = closed
+        self.is_sprint = is_sprint
 
         for i in range(3):
             curr = self.preds[i]
@@ -462,7 +463,8 @@ class PodiumPredictionView(discord.ui.View):
             next_view = OtherPredictionView(
                 self.guild_id, self.user_id, self.race_number,
                 self.race_name, self.preds, pole, fl, constructor,
-                closed=not predictions_open(interaction.guild.id, get_now(), RACE_CACHE)
+                closed=not predictions_open(interaction.guild.id, get_now(), RACE_CACHE),
+                is_sprint=self.is_sprint
             )
             await interaction.followup.send(
                 content=await next_view.get_content(),
@@ -476,7 +478,8 @@ class PodiumPredictionView(discord.ui.View):
 
 class OtherPredictionView(discord.ui.View):
     def __init__(self, guild_id, user_id, race_number, race_name,
-                 podium_preds, pole=None, fastest_lap=None, constructor=None, closed=False):
+                 podium_preds, pole=None, fastest_lap=None, 
+                 constructor=None, closed=False, is_sprint=False):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.user_id = user_id
@@ -487,6 +490,7 @@ class OtherPredictionView(discord.ui.View):
         self.fastest_lap = fastest_lap
         self.constructor = constructor
         self.closed = closed
+        self.is_sprint = is_sprint
 
         # Pole select
         pole_select = discord.ui.Select(
@@ -646,13 +650,187 @@ class OtherPredictionView(discord.ui.View):
                     constructor_winner=self.constructor
                 )
 
-            _, existing_bold = await asyncio.to_thread(fetch_existing_predictions, self.guild_id, self.user_id, self.race_number)
+            if self.is_sprint:
+                sprint_existing = await asyncio.to_thread(
+                    fetch_sprint_preds, self.guild_id, self.user_id, self.race_number
+                )
+                sprint_winner = sprint_existing['sprint_winner'] if sprint_existing else None
+                sprint_pole = sprint_existing['sprint_pole'] if sprint_existing else None
+                sprint_closed = not sprint_predictions_open(interaction.guild.id, get_now(), RACE_CACHE)
+
+                next_view = SprintPredictionStepView(
+                    self.guild_id, self.user_id, self.race_number, self.race_name,
+                    sprint_winner, sprint_pole,
+                    sprint_closed=sprint_closed,
+                    race_closed=self.closed
+                )
+                await interaction.followup.send(
+                    content=await next_view.get_content(),
+                    view=next_view,
+                    ephemeral=True
+                )
+            else:
+                _, existing_bold = await asyncio.to_thread(
+                    fetch_existing_predictions, self.guild_id, self.user_id, self.race_number
+                )
+                bold = existing_bold['prediction'] if existing_bold else None
+                next_view = BoldPredictionView(
+                    self.guild_id, self.user_id, self.race_number,
+                    self.race_name, bold,
+                    closed=self.closed
+                )
+                await interaction.followup.send(
+                    content=await next_view.get_content(),
+                    view=next_view,
+                    ephemeral=True
+                )
+    
+        except Exception:
+            logger.exception("OtherPredictionView next_callback error")
+
+# ─── Step 3 (Sprint only): Sprint Prediction Step View ────────────────────────
+
+class SprintPredictionStepView(discord.ui.View):
+    def __init__(self, guild_id, user_id, race_number, race_name,
+                 sprint_winner=None, sprint_pole=None,
+                 sprint_closed=False, race_closed=False):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.race_number = race_number
+        self.race_name = race_name
+        self.sprint_winner = sprint_winner
+        self.sprint_pole = sprint_pole
+        self.sprint_closed = sprint_closed
+        self.race_closed = race_closed
+
+        winner_select = discord.ui.Select(
+            placeholder="Sprint Winner" if not sprint_winner else sprint_winner,
+            options=[
+                discord.SelectOption(label=d, value=d, default=(d == sprint_winner))
+                for d in DRIVERS
+            ],
+            row=0,
+            disabled=sprint_closed
+        )
+        winner_select.callback = self._make_driver_callback('winner')
+        self.add_item(winner_select)
+
+        pole_select = discord.ui.Select(
+            placeholder="Sprint Pole" if not sprint_pole else sprint_pole,
+            options=[
+                discord.SelectOption(label=d, value=d, default=(d == sprint_pole))
+                for d in DRIVERS
+            ],
+            row=1,
+            disabled=sprint_closed
+        )
+        pole_select.callback = self._make_driver_callback('pole')
+        self.add_item(pole_select)
+
+        clear_btn = discord.ui.Button(
+            label="Clear",
+            style=discord.ButtonStyle.red,
+            row=2,
+            disabled=sprint_closed
+        )
+        clear_btn.callback = self.clear_callback
+        self.add_item(clear_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.green,
+            row=2,
+            disabled=False
+        )
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+    async def get_content(self):
+        existing = await asyncio.to_thread(
+            fetch_sprint_preds, self.guild_id, self.user_id, self.race_number
+        )
+        db_winner = existing['sprint_winner'] if existing else None
+        db_pole = existing['sprint_pole'] if existing else None
+
+        lines = [f"🏎️ **{self.race_name} — Sprint Predictions**\n"]
+        lines.append(f"🏆 Sprint Winner: **{db_winner or '_Not saved yet_'}**")
+        lines.append(f"🥇 Sprint Pole: **{db_pole or '_Not saved yet_'}**")
+        if self.sprint_closed:
+            lines.append("\n🔒 _Sprint predictions are closed — view only._")
+        return "\n".join(lines)
+
+    def _make_driver_callback(self, field):
+        async def callback(interaction: discord.Interaction):
+            try:
+                await interaction.response.defer(ephemeral=True)
+
+                if not sprint_predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                    for child in self.children:
+                        if isinstance(child, discord.ui.Select):
+                            child.disabled = True
+                    self.sprint_closed = True
+                    await interaction.edit_original_response(
+                        content=await self.get_content(), view=self
+                    )
+                    return
+
+                selected = interaction.data['values'][0]
+                if field == 'winner':
+                    self.sprint_winner = selected
+                else:
+                    self.sprint_pole = selected
+
+                for child in self.children:
+                    if isinstance(child, discord.ui.Select) and child.row == (0 if field == 'winner' else 1):
+                        child.placeholder = selected
+                        for opt in child.options:
+                            opt.default = (opt.value == selected)
+
+                await interaction.edit_original_response(
+                    content=await self.get_content(), view=self
+                )
+            except Exception:
+                logger.exception("SprintPredictionStepView driver callback error")
+        return callback
+
+    async def clear_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            self.sprint_winner = None
+            self.sprint_pole = None
+            for child in self.children:
+                if isinstance(child, discord.ui.Select):
+                    child.placeholder = "Sprint Winner" if child.row == 0 else "Sprint Pole"
+                    for opt in child.options:
+                        opt.default = False
+            await interaction.edit_original_response(
+                content=await self.get_content(), view=self
+            )
+        except Exception:
+            logger.exception("SprintPredictionStepView clear_callback error")
+
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if not self.sprint_closed:
+                save_sprint_predictions(
+                    self.guild_id, self.user_id,
+                    interaction.user.name,
+                    self.race_number, self.race_name,
+                    self.sprint_winner, self.sprint_pole
+                )
+
+            _, existing_bold = await asyncio.to_thread(
+                fetch_existing_predictions, self.guild_id, self.user_id, self.race_number
+            )
             bold = existing_bold['prediction'] if existing_bold else None
 
             next_view = BoldPredictionView(
                 self.guild_id, self.user_id, self.race_number,
                 self.race_name, bold,
-                closed=not predictions_open(interaction.guild.id, get_now(), RACE_CACHE)
+                closed=self.race_closed
             )
             await interaction.followup.send(
                 content=await next_view.get_content(),
@@ -660,9 +838,9 @@ class OtherPredictionView(discord.ui.View):
                 ephemeral=True
             )
         except Exception:
-            logger.exception("OtherPredictionView next_callback error")
+            logger.exception("SprintPredictionStepView next_callback error")
 
-# ─── Step 3: Bold Prediction View ─────────────────────────────────────────────
+# ─── Step 4: Bold Prediction View ─────────────────────────────────────────────
 
 class BoldPredModal(discord.ui.Modal, title="Bold Prediction"):
     prediction = discord.ui.TextInput(
@@ -802,7 +980,7 @@ class BoldPredictionView(discord.ui.View):
 
 # ─── Main Command ──────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="race_predict", description="Make all your race predictions")
+@bot.tree.command(name="predict", description="Make all your race predictions")
 async def predict(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
@@ -811,12 +989,13 @@ async def predict(interaction: discord.Interaction):
         race_name = RACE_CACHE.get("race_name")
         guild_id = interaction.guild.id
         user_id = interaction.user.id
+        is_sprint = RACE_CACHE.get("is_sprint", False)
         closed = not predictions_open(guild_id, get_now(), RACE_CACHE)
 
         existing, _ = await asyncio.to_thread(fetch_existing_predictions, guild_id, user_id, race_number)
         preds = [existing['pos1'], existing['pos2'], existing['pos3']] if existing else [None, None, None]
 
-        view = PodiumPredictionView(guild_id, user_id, race_number, race_name, preds, closed=closed)
+        view = PodiumPredictionView(guild_id, user_id, race_number, race_name, preds, closed=closed, is_sprint=is_sprint)
         await interaction.followup.send(
             content=await view.get_content(),
             view=view,
@@ -825,6 +1004,68 @@ async def predict(interaction: discord.Interaction):
 
     except Exception:
         logger.exception("predict command error")
+
+@bot.tree.command(name="view_predictions", description="View your predictions for the current race")
+@app_commands.describe(user="The user to view predictions for (defaults to yourself)")
+async def view_predictions(interaction: discord.Interaction, user: discord.Member = None):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        if not RACE_CACHE.get("race_number"):
+            await interaction.followup.send("❌ The last race of the season may be over. If not, try again in a moment.", ephemeral=True)
+            return
+        guild_id = interaction.guild.id
+        target = user or interaction.user
+
+        if target != interaction.user:
+            if predictions_open(guild_id, get_now(), RACE_CACHE):
+                await interaction.followup.send(
+                    "❌ You can only view another user's predictions when predictions are locked!",
+                    ephemeral=True
+                )
+                return
+        race_number = int(RACE_CACHE.get("race_number"))
+        race_name = RACE_CACHE.get("race_name")
+        is_sprint = RACE_CACHE.get("is_sprint", False)
+
+        existing, bold_existing = await asyncio.to_thread(
+            fetch_existing_predictions, guild_id, target.id, race_number
+        )
+
+        sprint_existing = await asyncio.to_thread(
+            fetch_sprint_preds, guild_id, target.id, race_number
+        ) if is_sprint else None
+
+        if not existing and not bold_existing and not sprint_existing:
+            await interaction.followup.send(
+                f"❌ **{target.display_name}** has no predictions for the **{race_name}**.",
+                ephemeral=True
+            )
+            return
+
+        lines = [f"**{target.display_name}'s Predictions — {race_name}**\n"]
+
+        if existing:
+            lines.append("**🏁 Race Predictions**")
+            lines.append(f"Position 1: **{existing['pos1'] or '_Not predicted_'}**")
+            lines.append(f"Position 2: **{existing['pos2'] or '_Not predicted_'}**")
+            lines.append(f"Position 3: **{existing['pos3'] or '_Not predicted_'}**")
+            lines.append(f"Pole:**{existing['pole'] or '_Not predicted_'}**")
+            lines.append(f"Fastest Lap: **{existing['fastest_lap'] or '_Not predicted_'}**")
+            lines.append(f"Constructor: **{existing['constructor_winner'] or '_Not predicted_'}**")
+
+        if sprint_existing:
+            lines.append("\n**🏎️ Sprint**")
+            lines.append(f"Sprint Winner: **{sprint_existing['sprint_winner'] or '_Not predicted_'}**")
+            lines.append(f"Sprint Pole: **{sprint_existing['sprint_pole'] or '_Not predicted_'}**")
+
+        if bold_existing:
+            lines.append("\n**🧨 Bold Prediction**")
+            lines.append(f"> {bold_existing['prediction']}")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    except Exception:
+        logger.exception("view_predictions error")
 
 class SprintWinnerSelect(discord.ui.Select):
     def __init__(self, current=None):
@@ -1210,12 +1451,14 @@ async def leaderboard(interaction: discord.Interaction):
 
 GUIDE_DICTIONARY = {
     "Race Predictions": 
-                    {"/race_predict": 
+                    {"/predict": 
                     """Make your race predictions.
                     \n\nPredict the Podium, Polesitter, Fastest Lap and Winning Constructor of the race.
                     \n\n*Note: Winning Constructor is the constructor who scored the most points.*
                     \n\nAlso make your bold prediction for the race.
-                    \n\n*Predictions will lock at the start of Qualifying.*""",
+                    \n\nOn Sprint weekends, sprint predictions can also be made.
+                    \n\n*Predictions will lock at the start of Qualifying.*
+                    \n\n\n\n*Sprint Predictions will lock at the start of Sprint Qualifying.*""",
                     "/race_bold_predict":
                     "Make your bold predictions for the race.\n\nThese will be pinned before the start of Qualifying for discussion if a channel is set\n\n*Predictions will lock at the start of Qualifying*",
                     "/sprint_predict": 
@@ -1226,7 +1469,9 @@ GUIDE_DICTIONARY = {
                      "/crazy_predict":
                      "Make your craziest predictions for the season. These can be anything from driver transfers to retirements and more!\n\n**Crazy Predictions are limited to a maximum of 5 predictions per user per season**",},
     "View Predictions":
-                    {"/view_race_bold_predictions":
+                    {"/view_predictions":
+                     "View a user's predictions for a race.\n\n*Note: Predictions of other users can only be viewed when predictions are locked.*",
+                     "/view_race_bold_predictions":
                      "View all bold predictions for a selected race.",
                      "/view_correct_bold_predictions":
                      "View all the correct bold predictions by a user.",

@@ -134,7 +134,8 @@ async def race_results(year=None):
     try:
         # Race session
         race_session = fastf1.get_session(year, finished_race, "Race")
-        race_session.load(laps=True, telemetry=False, weather=False, messages=False)
+        await asyncio.to_thread(race_session.load,
+                                laps=True, telemetry=False, weather=False, messages=False)
         race_results = race_session.results
         if race_results.empty:
             logger.warning("Race results are empty for %s", finished_race)
@@ -156,7 +157,8 @@ async def race_results(year=None):
     try:
         # Qualifying session
         quali_session = fastf1.get_session(year, finished_race, "Qualifying")
-        quali_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        await asyncio.to_thread(quali_session.load,
+                                laps=False, telemetry=False, weather=False, messages=False)
         quali_results = quali_session.results
         if quali_results.empty:
             logger.warning("Quali results are empty for %s", finished_race)
@@ -224,7 +226,8 @@ async def sprint_results(year=None):
     try:
     # Sprint session
         sprint_session = fastf1.get_session(year, finished_race, "Sprint")
-        sprint_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        await asyncio.to_thread(sprint_session.load,
+                                laps=False, telemetry=False, weather=False, messages=False)
         sprint_results = sprint_session.results
         if sprint_results.empty:
             logger.warning("Sprint results are empty for %s", finished_race)
@@ -237,7 +240,8 @@ async def sprint_results(year=None):
     try:
         # Sprint Qualifying session
         sprintquali_session = fastf1.get_session(year, finished_race, "Sprint Qualifying")
-        sprintquali_session.load(laps=False, telemetry=False, weather=False, messages=False)
+        await asyncio.to_thread (sprintquali_session.load,
+                                 laps=False, telemetry=False, weather=False, messages=False)
         sprintquali_results = sprintquali_session.results
         if sprintquali_results.empty:
             logger.warning("Sprint Quali results are empty for %s", finished_race)
