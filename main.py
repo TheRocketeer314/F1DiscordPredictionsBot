@@ -57,7 +57,7 @@ from keep_alive import keep_alive
 import logging
 import sys
 from version import __version__, __release_date__
-from utils.git_utils import get_version, get_release_date, get_changes
+from utils.git_utils import get_changes
 
 sys.stdout.reconfigure(line_buffering=True)
 try:
