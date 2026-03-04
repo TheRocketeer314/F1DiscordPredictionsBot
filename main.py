@@ -300,8 +300,6 @@ async def version(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-from utils.git_utils import get_changes, get_version
-
 @bot.tree.command(name="whatsnew", description="Show recent bot updates")
 async def whatsnew(interaction: discord.Interaction):
 
