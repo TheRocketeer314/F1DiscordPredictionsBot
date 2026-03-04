@@ -1023,6 +1023,7 @@ async def view_predictions(interaction: discord.Interaction, user: discord.Membe
                     ephemeral=True
                 )
                 return
+            
         race_number = int(RACE_CACHE.get("race_number"))
         race_name = RACE_CACHE.get("race_name")
         is_sprint = RACE_CACHE.get("is_sprint", False)
