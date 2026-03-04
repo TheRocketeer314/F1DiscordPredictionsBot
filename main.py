@@ -334,7 +334,7 @@ async def whatsnew(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ─── Step 1: Podium Prediction View ───────────────────────────────────────────
+# ─── Step 1: Podium Prediction View ──────────────────────────────────────────
 
 class PodiumPredictionView(discord.ui.View):
     def __init__(self, guild_id, user_id, race_number, race_name, preds=None, closed=False):
