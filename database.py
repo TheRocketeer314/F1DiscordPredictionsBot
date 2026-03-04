@@ -259,7 +259,7 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
-        
+            
         cur.execute("""CREATE TABLE IF NOT EXISTS persistent_messages (
         guild_id BIGINT NOT NULL,
         key TEXT,
@@ -282,6 +282,12 @@ def init_db():
                 );
             """)
         
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bold_pred_optout (
+                guild_id BIGINT PRIMARY KEY
+            );
+        """)
+
         conn.commit()
         cur.close()
         conn.close()
@@ -337,40 +343,61 @@ def upsert_guild(guild_id: int, guild_name: str):
             DO UPDATE SET guild_name = excluded.guild_name;
         """, (guild_id, guild_name))
 
-def save_race_predictions(guild_id, user_id, username, race_number, race_name, preds):
+def is_bold_pred_opted_out(guild_id):
+    row = safe_fetch_one(
+        "SELECT 1 FROM bold_pred_optout WHERE guild_id = %s",
+        (guild_id,)
+    )
+    return row is not None
+
+def set_bold_pred_optout(guild_id, opted_out: bool):
+    if opted_out:
+        safe_execute(
+            "INSERT INTO bold_pred_optout (guild_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (guild_id,)
+        )
+    else:
+        safe_execute(
+            "DELETE FROM bold_pred_optout WHERE guild_id = %s",
+            (guild_id,)
+        )
+
+def save_race_predictions(guild_id, user_id, username, race_number, race_name,
+                          pos1=None, pos2=None, pos3=None, 
+                          pole=None, fastest_lap=None, constructor_winner=None):
     safe_execute(
         """
         INSERT INTO race_predictions (
             guild_id, user_id, username, race_number, race_name,
-            pos1, pos2, pos3, pole, fastest_lap
+            pos1, pos2, pos3, pole, fastest_lap, constructor_winner
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
-            race_name = excluded.race_name,
             username = excluded.username,
-            pos1 = excluded.pos1,
-            pos2 = excluded.pos2,
-            pos3 = excluded.pos3,
-            pole = excluded.pole,
-            fastest_lap = excluded.fastest_lap
+            race_name = excluded.race_name,
+            pos1 = COALESCE(excluded.pos1, race_predictions.pos1),
+            pos2 = COALESCE(excluded.pos2, race_predictions.pos2),
+            pos3 = COALESCE(excluded.pos3, race_predictions.pos3),
+            pole = COALESCE(excluded.pole, race_predictions.pole),
+            fastest_lap = COALESCE(excluded.fastest_lap, race_predictions.fastest_lap),
+            constructor_winner = COALESCE(excluded.constructor_winner, race_predictions.constructor_winner)
         """,
-        (guild_id, user_id, username, race_number, race_name, *preds)
+        (guild_id, user_id, username, race_number, race_name,
+         pos1, pos2, pos3, pole, fastest_lap, constructor_winner)
     )
 
-def save_constructor_prediction(guild_id, user_id, username, race_number, race_name, constructor):
-    safe_execute(
-        """
-        INSERT INTO race_predictions (
-            guild_id, user_id, username, race_number, race_name, constructor_winner
-        )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT(guild_id, user_id, race_number) DO UPDATE SET
-            race_name = excluded.race_name,
-            username = excluded.username,
-            constructor_winner = excluded.constructor_winner
-        """,
-        (guild_id, user_id, username, race_number, race_name, constructor)
+def fetch_existing_predictions(guild_id, user_id, race_number):
+    race_pred = safe_fetch_one(
+        "SELECT pos1, pos2, pos3, pole, fastest_lap, constructor_winner FROM race_predictions "
+        "WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+        (guild_id, user_id, race_number)
     )
+    bold_pred = safe_fetch_one(
+        "SELECT prediction FROM bold_predictions "
+        "WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+        (guild_id, user_id, race_number)
+    )
+    return race_pred, bold_pred
 
 def save_sprint_predictions(guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole):
     safe_execute(
@@ -386,8 +413,14 @@ def save_sprint_predictions(guild_id, user_id, username, race_number, race_name,
             sprint_winner = excluded.sprint_winner,
             sprint_pole = excluded.sprint_pole
         """,
-        (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole)
-    )
+        (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole))
+    
+def fetch_sprint_preds(guild_id, user_id, race_number):
+        return safe_fetch_one(
+            "SELECT sprint_winner, sprint_pole FROM race_predictions "
+            "WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+            (guild_id, user_id, race_number)
+        )
 
 # ---------- lock state ----------
 def set_season_state(guild_id, open_: bool):
@@ -404,7 +437,6 @@ def is_season_open(guild_id) -> bool:
         (guild_id,)
     )
     return bool(row["season_open"]) if row else False
-
 
 # ---------- predictions ----------
 def save_season_prediction(guild_id, user_id: int, username:str,*, wdc: str, wcc: str):

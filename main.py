@@ -2,7 +2,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import os
-import math
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timedelta
@@ -14,8 +13,9 @@ from FastF1_service import refresh_race_cache, season_calender
 from database import (init_db,
                       safe_fetch_one,
                       save_race_predictions,
-                      save_constructor_prediction,
+                      fetch_existing_predictions,
                       save_sprint_predictions,
+                      fetch_sprint_preds,
                       set_season_state,
                       is_season_open,
                       save_season_prediction,
@@ -29,8 +29,9 @@ from database import (init_db,
                       save_bold_prediction,
                       update_leaderboard,
                       prediction_state_log,
+                      is_bold_pred_opted_out,
+                      set_bold_pred_optout,
                       fetch_bold_predictions,
-                      get_crazy_predictions,
                       count_crazy_predictions,
                       set_prediction_channel,
                       get_prediction_channel,
@@ -55,6 +56,7 @@ from scoring import score_race_for_guild, score_final_champions_for_guild
 from keep_alive import keep_alive
 import logging
 import sys
+from utils.git_utils import get_version, get_release_date, get_changes
 
 sys.stdout.reconfigure(line_buffering=True)
 try:
@@ -82,10 +84,6 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 #Globals
 RACE_CACHE: dict = {}
 SEASON_CALENDER = []
-
-main_predictions = {}
-sprint_predictions = {}
-constructors_predictions = {}
 
 leaderboard_update_time = None
 
@@ -264,8 +262,6 @@ async def on_guild_update(before, after):
     if before.name != after.name:
         upsert_guild(after.id, after.name)
 
-user_predictions = {}
-
 prediction_locked = {}
 
 PREDICTIONS = ["Position 1", "Position 2", "Position 3", "Pole", "Fastest Lap"]
@@ -289,200 +285,609 @@ CONSTRUCTORS = [
     "Haas F1 Team", "Racing Bulls", "Williams",
     "Audi", "Cadillac", "Aston Martin", "Alpine"]
 
-user_predictions = defaultdict(
-    lambda: defaultdict(
-        lambda: defaultdict(lambda: [None] * 5)
+@bot.tree.command(name="version", description="Show bot version information")
+async def version(interaction: discord.Interaction):
+
+    version = get_version()
+    release = get_release_date()
+
+    embed = discord.Embed(
+        title="F1 Predictions Bot",
+        color=discord.Color.red()
     )
-)
-class PredictionSelect(discord.ui.Select):
-    def __init__(self, index, current_selection=None):
-        self.index = index
-        options = [
-            discord.SelectOption(label=d, value=d, default=(d == current_selection))
-            for d in DRIVERS
-        ]
-        super().__init__(
-            placeholder=f"Pick driver for {PREDICTIONS[index]}",
-            options=options
+
+    embed.add_field(name="Version", value=version, inline=True)
+    embed.add_field(name="Released", value=release, inline=True)
+
+    embed.set_footer(text="Use /whatsnew to see recent features")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+from utils.git_utils import get_changes, get_version
+
+@bot.tree.command(name="whatsnew", description="Show recent bot updates")
+async def whatsnew(interaction: discord.Interaction):
+
+    version = get_version()
+    features, fixes = get_changes()
+
+    embed = discord.Embed(
+        title=f"🚀 What's New in {version}",
+        color=discord.Color.blue()
+    )
+
+    if features:
+        embed.add_field(
+            name="✨ New Features",
+            value="\n".join(f"• {f}" for f in features[:5]),
+            inline=False
         )
 
-    async def callback(self, interaction: discord.Interaction):  # <-- indented inside class
+    if fixes:
+        embed.add_field(
+            name="🐛 Bug Fixes",
+            value="\n".join(f"• {f}" for f in fixes[:5]),
+            inline=False
+        )
+
+    embed.set_footer(text="Version history generated from Git commits")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ─── Step 1: Podium Prediction View ───────────────────────────────────────────
+
+class PodiumPredictionView(discord.ui.View):
+    def __init__(self, guild_id, user_id, race_number, race_name, preds=None, closed=False):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.race_number = race_number
+        self.race_name = race_name
+        self.preds = preds or [None, None, None]
+        self.closed = closed
+
+        for i in range(3):
+            curr = self.preds[i]
+            options = [
+                discord.SelectOption(label=d, value=d, default=(d == curr))
+                for d in DRIVERS
+            ]
+            select = discord.ui.Select(
+                placeholder=f"Position {i+1}" if not curr else curr,
+                options=options,
+                row=i,
+                disabled=closed
+            )
+            select.callback = self._make_select_callback(i)
+            self.add_item(select)
+
+        clear_btn = discord.ui.Button(
+            label="Clear",
+            style=discord.ButtonStyle.red,
+            row=3,
+            disabled=closed
+        )
+        clear_btn.callback = self.clear_callback
+        self.add_item(clear_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.green,
+            row=3,
+            disabled=False
+        )
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+    def _make_select_callback(self, index):
+        async def callback(interaction: discord.Interaction):
+            try:
+                await interaction.response.defer(ephemeral=True)
+
+                if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                    for child in self.children:
+                        child.disabled = True
+                    await interaction.edit_original_response(content=self.get_content(), view=self)
+                    return
+
+                selected = interaction.data['values'][0]
+
+                # Remove selected driver from other positions
+                for i in range(3):
+                    if i != index and self.preds[i] == selected:
+                        self.preds[i] = None
+
+                self.preds[index] = selected
+                taken = {v for v in self.preds if v}
+
+                # Mutate existing selects
+                for child in self.children:
+                    if isinstance(child, discord.ui.Select) and child.row < 3:
+                        curr = self.preds[child.row]
+                        child.options = [
+                            discord.SelectOption(label=d, value=d, default=(d == curr))
+                            for d in DRIVERS
+                            if d not in taken or d == curr
+                        ]
+                        child.placeholder = f"Position {child.row + 1}" if not curr else curr
+
+                await interaction.edit_original_response(content=await self.get_content(), view=self)
+
+            except Exception:
+                logger.exception("PodiumPredictionView select callback error")
+        return callback
+
+    async def get_content(self):
+        existing, _ = await asyncio.to_thread(
+            fetch_existing_predictions, self.guild_id, self.user_id, self.race_number
+        )
+        db_preds = [existing['pos1'], existing['pos2'], existing['pos3']] if existing else [None, None, None]
+        labels = ["🥇 Position 1", "🥈 Position 2", "🥉 Position 3"]
+        lines = [f"🏁 **{self.race_name} — Podium Predictions**\n"]
+        for i, label in enumerate(labels):
+            val = db_preds[i] or "_Not saved yet_"
+            lines.append(f"{label}: **{val}**")
+        if self.closed:
+            lines.append("\n🔒 _Predictions are closed — view only._")
+        return "\n".join(lines)
+
+    async def clear_callback(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
-            now = get_now()
+            for child in self.children:
+                if isinstance(child, discord.ui.Select):
+                    child.options = [
+                        discord.SelectOption(label=d, value=d)
+                        for d in DRIVERS
+                    ]
+                    child.placeholder = f"Position {child.row + 1}"
+            self.preds = [None, None, None]
+            await interaction.edit_original_response(content=await self.get_content(), view=self)
+        except Exception:
+            logger.exception("PodiumPredictionView clear_callback error")
 
-            if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-                self.view.disable_all()
-                await interaction.edit_original_response(
-                    content="🔒 Predictions are closed.",
-                    view=self.view
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            # Only save if predictions are open
+            if predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                save_race_predictions(
+                    self.guild_id, self.user_id,
+                    interaction.user.name,
+                    self.race_number, self.race_name,
+                    pos1=self.preds[0], pos2=self.preds[1], pos3=self.preds[2]
                 )
-                return
 
-            guild_id = interaction.guild.id
-            race_number = int(RACE_CACHE.get("race_number"))
-            user_id = interaction.user.id
-            preds = user_predictions[guild_id][race_number][user_id]
+            existing, _ = await asyncio.to_thread(fetch_existing_predictions, self.guild_id, self.user_id, self.race_number)
+            pole = existing['pole'] if existing else None
+            fl = existing['fastest_lap'] if existing else None
+            constructor = existing['constructor_winner'] if existing else None
 
-            selected_driver = self.values[0]
-            previous = preds[self.index]
+            next_view = OtherPredictionView(
+                self.guild_id, self.user_id, self.race_number,
+                self.race_name, self.preds, pole, fl, constructor,
+                closed=not predictions_open(interaction.guild.id, get_now(), RACE_CACHE)
+            )
+            await interaction.followup.send(
+                content=await next_view.get_content(),
+                view=next_view,
+                ephemeral=True
+            )
+        except Exception:
+            logger.exception("PodiumPredictionView next_callback error")
 
-            if self.index < 3:
-                other_selected = {v for i, v in enumerate(preds[:3]) if v and i != self.index}
-                if selected_driver in other_selected and selected_driver != previous:
-                    await interaction.followup.send(
-                        f"❌ {selected_driver} already selected for Positions 1-3. Pick a different driver!",
-                        ephemeral=True
+# ─── Step 2: Pole / Fastest Lap / Constructor View ────────────────────────────
+
+class OtherPredictionView(discord.ui.View):
+    def __init__(self, guild_id, user_id, race_number, race_name,
+                 podium_preds, pole=None, fastest_lap=None, constructor=None, closed=False):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.race_number = race_number
+        self.race_name = race_name
+        self.podium_preds = podium_preds
+        self.pole = pole
+        self.fastest_lap = fastest_lap
+        self.constructor = constructor
+        self.closed = closed
+
+        # Pole select
+        pole_select = discord.ui.Select(
+            placeholder="🏆 Pole Position",
+            options=[
+                discord.SelectOption(label=d, value=d, default=(d == pole))
+                for d in DRIVERS
+            ],
+            row=0,
+            disabled=closed
+        )
+        pole_select.callback = self._make_driver_callback('pole')
+        self.add_item(pole_select)
+
+        # Fastest lap select
+        fl_select = discord.ui.Select(
+            placeholder="⚡ Fastest Lap",
+            options=[
+                discord.SelectOption(label=d, value=d, default=(d == fastest_lap))
+                for d in DRIVERS
+            ],
+            row=1,
+            disabled=closed
+        )
+        fl_select.callback = self._make_driver_callback('fastest_lap')
+        self.add_item(fl_select)
+
+        # Constructor select
+        cons_select = discord.ui.Select(
+            placeholder="🏎️ Winning Constructor",
+            options=[
+                discord.SelectOption(label=c, value=c, default=(c == constructor))
+                for c in CONSTRUCTORS
+            ],
+            row=2,
+            disabled=closed
+        )
+        cons_select.callback = self._make_constructor_callback()
+        self.add_item(cons_select)
+
+        clear_btn = discord.ui.Button(
+            label="Clear",
+            style=discord.ButtonStyle.red,
+            row=3,
+            disabled=closed
+        )
+        clear_btn.callback = self.clear_callback
+        self.add_item(clear_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.green,
+            row=3,
+            disabled=False
+        )
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+    def _make_driver_callback(self, field):
+        async def callback(interaction: discord.Interaction):
+            try:
+                await interaction.response.defer(ephemeral=True)
+
+                if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                    for child in self.children:
+                        child.disabled = True
+                    await interaction.edit_original_response(
+                        content=await self.get_content(), view=self
                     )
                     return
 
-                preds[self.index] = selected_driver
+                selected = interaction.data['values'][0]
+                if field == 'pole':
+                    self.pole = selected
+                else:
+                    self.fastest_lap = selected
+
+                # Update placeholder of the select that was just used
+                for child in self.children:
+                    if isinstance(child, discord.ui.Select) and child.row == (0 if field == 'pole' else 1):
+                        child.placeholder = selected
+                        for opt in child.options:
+                            opt.default = (opt.value == selected)
+
+                await interaction.edit_original_response(
+                    content=await self.get_content(), view=self
+                )
+            except Exception:
+                logger.exception("OtherPredictionView driver callback error")
+        return callback
+
+    def _make_constructor_callback(self):
+        async def callback(interaction: discord.Interaction):
+            try:
+                await interaction.response.defer(ephemeral=True)
+
+                if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                    for child in self.children:
+                        child.disabled = True
+                    await interaction.edit_original_response(
+                        content=await self.get_content(), view=self
+                    )
+                    return
+
+                self.constructor = interaction.data['values'][0]
+
+                for child in self.children:
+                    if isinstance(child, discord.ui.Select) and child.row == 2:
+                        child.placeholder = self.constructor
+                        for opt in child.options:
+                            opt.default = (opt.value == self.constructor)
+
+                await interaction.edit_original_response(
+                    content=await self.get_content(), view=self
+                )
+            except Exception:
+                logger.exception("OtherPredictionView constructor callback error")
+        return callback
+
+    async def get_content(self):
+        lines = [f"🏁 **{self.race_name} — Other Predictions**\n"]
+        
+        existing, _ = await asyncio.to_thread(fetch_existing_predictions, self.guild_id, self.user_id, self.race_number)
+        db_pole = existing['pole'] if existing else None
+        db_fl = existing['fastest_lap'] if existing else None
+        db_cons = existing['constructor_winner'] if existing else None
+        
+        lines.append(f"🏆 Pole: **{db_pole or '_Not saved yet_'}**")
+        lines.append(f"⚡ Fastest Lap: **{db_fl or '_Not saved yet_'}**")
+        lines.append(f"🏎️ Constructor: **{db_cons or '_Not saved yet_'}**")
+        if self.closed:
+            lines.append("\n🔒 _Predictions are closed — view only._")
+        return "\n".join(lines)
+
+    async def clear_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            new_view = OtherPredictionView(
+                self.guild_id, self.user_id, self.race_number, self.race_name,
+                self.podium_preds, None, None, None
+            )
+            await interaction.edit_original_response(
+                content=await new_view.get_content(), view=new_view
+            )
+        except Exception:
+            logger.exception("OtherPredictionView clear_callback error")
+
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            if predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
                 save_race_predictions(
-                    guild_id, user_id, interaction.user.name,
-                    race_number, RACE_CACHE.get("race_name"), preds
+                    self.guild_id, self.user_id, interaction.user.name,
+                    self.race_number, self.race_name,
+                    pole=self.pole, fastest_lap=self.fastest_lap,
+                    constructor_winner=self.constructor
                 )
 
-                taken = {v for v in preds[:3] if v}
+            _, existing_bold = await asyncio.to_thread(fetch_existing_predictions, self.guild_id, self.user_id, self.race_number)
+            bold = existing_bold['prediction'] if existing_bold else None
 
-                for child in list(self.view.children):
-                    if isinstance(child, PredictionSelect) and child.index < 3:
-                        curr = preds[child.index]
-                        new_options = []
-                        for d in DRIVERS:
-                            if d not in taken or d == curr:
-                                new_options.append(
-                                    discord.SelectOption(label=d, value=d, default=(d == curr))
-                                )
-                        child.options = new_options
+            next_view = BoldPredictionView(
+                self.guild_id, self.user_id, self.race_number,
+                self.race_name, bold,
+                closed=not predictions_open(interaction.guild.id, get_now(), RACE_CACHE)
+            )
+            await interaction.followup.send(
+                content=await next_view.get_content(),
+                view=next_view,
+                ephemeral=True
+            )
+        except Exception:
+            logger.exception("OtherPredictionView next_callback error")
 
-                # Fix: use edit_original_response instead of followup.edit_message
-                await interaction.edit_original_response(view=self.view)
-                return
+# ─── Step 3: Bold Prediction View ─────────────────────────────────────────────
 
-            # Positions 3 and 4 (Fastest Lap / Pole) — duplicates allowed
-            preds[self.index] = selected_driver
-            save_race_predictions(
-                guild_id, user_id, interaction.user.name,
-                race_number, RACE_CACHE.get("race_name"), preds
+class BoldPredModal(discord.ui.Modal, title="Bold Prediction"):
+    prediction = discord.ui.TextInput(
+        label="Your bold prediction",
+        placeholder="Enter your bold prediction...",
+        max_length=200,
+        style=discord.TextStyle.paragraph
+    )
+
+    def __init__(self, guild_id, user_id, race_number, race_name, view):
+        super().__init__()
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.race_number = race_number
+        self.race_name = race_name
+        self.parent_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            save_bold_prediction(
+                self.guild_id,
+                user_id=self.user_id,
+                race_number=self.race_number,
+                username=str(interaction.user),
+                race_name=self.race_name,
+                prediction=str(self.prediction),
+                timestamp=get_now().isoformat()
             )
 
-        except Exception:
-            logger.exception("PredictionSelect error")
+            new_view = BoldPredictionView(
+                self.guild_id, self.user_id, self.race_number,
+                self.race_name, str(self.prediction)
+            )
+            await interaction.edit_original_response(
+                content=await new_view.get_content(),
+                view=new_view
+            )
+            await interaction.followup.send(
+                "✅ All your predictions have been recorded!",
+                ephemeral=True
+            )
 
-class PredictionView(discord.ui.View):
-    def __init__(self, guild_id, user_id=None):
+            # Public announcement
+            channel_id = get_prediction_channel(self.guild_id)
+            if channel_id:
+                try:
+                    guild = interaction.guild
+                    channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                    if channel:
+                        await channel.send(
+                            f"🧨 **{interaction.user.display_name}** submitted their bold prediction for the **{self.race_name}**:\n"
+                            f"> {str(self.prediction)}"
+                        )
+                except discord.NotFound:
+                    logger.exception("Channel not found for bold pred announcement")
+
+        except Exception:
+            logger.exception("BoldPredModal on_submit error")
+
+
+class BoldPredictionView(discord.ui.View):
+    def __init__(self, guild_id, user_id, race_number, race_name, bold=None, closed=False):
         super().__init__(timeout=300)
         self.guild_id = guild_id
-        race_number = int(RACE_CACHE.get("race_number"))
+        self.user_id = user_id
+        self.race_number = race_number
+        self.race_name = race_name
+        self.bold = bold
+        self.closed = closed
 
-        # Add the selects
-        for i in range(5):
-            current = None
-            if user_id and user_id in user_predictions:
-                current = user_predictions[guild_id][race_number][user_id][i]
-            self.add_item(PredictionSelect(i, current_selection=current))
+        enter_btn = discord.ui.Button(
+            label="Enter Bold Prediction",
+            style=discord.ButtonStyle.blurple,
+            row=0,
+            disabled=closed
+        )
+        enter_btn.callback = self.enter_callback
+        self.add_item(enter_btn)
 
-        # Disable everything if predictions are closed
-        now = get_now()
-        if not predictions_open(self.guild_id, now, RACE_CACHE):
-            self.disable_all()
+        skip_btn = discord.ui.Button(
+            label="Skip",
+            style=discord.ButtonStyle.grey,
+            row=0,
+            disabled=closed
+        )
+        skip_btn.callback = self.skip_callback
+        self.add_item(skip_btn)
 
-    def disable_all(self):
-        for child in self.children:
-            child.disabled = True
+    async def get_content(self):
+        lines = [f"🧨 **{self.race_name} — Bold Prediction**\n"]
+        
+        # Always show DB value
+        _, existing_bold = await asyncio.to_thread(fetch_existing_predictions, self.guild_id, self.user_id, self.race_number)
+        db_bold = existing_bold['prediction'] if existing_bold else None
+        
+        lines.append(f"**Saved Prediction:** {db_bold or '_Not saved yet_'}")
+                
+        if self.closed:
+            lines.append("\n🔒 _Predictions are closed — view only._")
+        else:
+            lines.append("\n_Click **Enter Bold Prediction** to type your prediction. Click **Skip** to skip making/updating your prediction._")
+        return "\n".join(lines)
 
-@bot.tree.command(name="race_predict", description="Make your race predictions")
+    async def enter_callback(self, interaction: discord.Interaction):
+        try:
+            if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                await interaction.response.defer(ephemeral=True)
+                new_view = BoldPredictionView(
+                    self.guild_id, self.user_id, self.race_number,
+                    self.race_name, self.bold, closed=True
+                )
+                await interaction.edit_original_response(
+                    content= await new_view.get_content(), view=new_view
+                )
+                return
+
+            await interaction.response.send_modal(
+                BoldPredModal(
+                    self.guild_id, self.user_id,
+                    self.race_number, self.race_name, self
+                )
+            )
+        except Exception:
+            logger.exception("BoldPredictionView enter_callback error")
+
+    async def skip_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(
+                "✅ Predictions saved! Bold prediction skipped.",
+                ephemeral=True
+            )
+        except Exception:
+            logger.exception("BoldPredictionView skip_callback error")
+
+# ─── Main Command ──────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="race_predict", description="Make all your race predictions")
 async def predict(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
+
+        race_number = int(RACE_CACHE.get("race_number"))
+        race_name = RACE_CACHE.get("race_name")
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        closed = not predictions_open(guild_id, get_now(), RACE_CACHE)
+
+        existing, _ = await asyncio.to_thread(fetch_existing_predictions, guild_id, user_id, race_number)
+        preds = [existing['pos1'], existing['pos2'], existing['pos3']] if existing else [None, None, None]
+
+        view = PodiumPredictionView(guild_id, user_id, race_number, race_name, preds, closed=closed)
         await interaction.followup.send(
-            f"Make your predictions for the {RACE_CACHE.get('race_name')}:",
-            view=PredictionView(interaction.guild.id, interaction.user.id),
-            ephemeral=True)
+            content=await view.get_content(),
+            view=view,
+            ephemeral=True
+        )
+
     except Exception:
-        logger.exception("Race prediction error")
-
-class SprintPredictionView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-        
-        self.sprint_winner = None
-        self.sprint_pole = None
-
-        for item in [
-            SprintWinnerSelect(self),
-            SprintPoleSelect(self),
-            SprintSubmitButton(self),
-        ]:
-            self.add_item(item)
+        logger.exception("predict command error")
 
 class SprintWinnerSelect(discord.ui.Select):
-    def __init__(self, view2: SprintPredictionView):
-        self.view2 = view2
-
+    def __init__(self, current=None):
         super().__init__(
-            placeholder="Select Sprint Winner",
-            options =[discord.SelectOption(label=d) for d in DRIVERS],
-            min_values=1,
-            max_values=1,)
+            placeholder="Sprint Winner" if not current else current,
+            options=[discord.SelectOption(label=d, value=d, default=(d == current)) for d in DRIVERS],
+            row=0
+        )
 
     async def callback(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
-            self.view2.sprint_winner = self.values[0]
+            selected = self.values[0]
+            self.placeholder = selected
+            for opt in self.options:
+                opt.default = (opt.value == selected)
+            self.view.sprint_winner = selected
+            await interaction.edit_original_response(view=self.view)
         except Exception:
             logger.exception("SprintWinner error")
 
-class SprintPoleSelect(discord.ui.Select):
-    def __init__(self, view2: SprintPredictionView):
-        self.view2 = view2
 
+class SprintPoleSelect(discord.ui.Select):
+    def __init__(self, current=None):
         super().__init__(
-            placeholder="Select Sprint Pole",
-            options =[discord.SelectOption(label=d) for d in DRIVERS],
-            min_values=1,
-            max_values=1,)
+            placeholder="Sprint Pole" if not current else current,
+            options=[discord.SelectOption(label=d, value=d, default=(d == current)) for d in DRIVERS],
+            row=1
+        )
 
     async def callback(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
-            self.view2.sprint_pole = self.values[0]
+            selected = self.values[0]
+            self.placeholder = selected
+            for opt in self.options:
+                opt.default = (opt.value == selected)
+            self.view.sprint_pole = selected
+            await interaction.edit_original_response(view=self.view)
         except Exception:
             logger.exception("SprintPole error")
 
+
 class SprintSubmitButton(discord.ui.Button):
-    def __init__(self, view2: SprintPredictionView):
-        self.view2 = view2
-        super().__init__(label="Submit Sprint Predictions", style=discord.ButtonStyle.green)
+    def __init__(self):
+        super().__init__(label="Submit Sprint Predictions", style=discord.ButtonStyle.green, row=2)
 
     async def callback(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
 
-            now = get_now()
+            if not sprint_predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
+                await interaction.followup.send("⛔ Sprint predictions are closed.", ephemeral=True)
+                return
 
-            if not sprint_predictions_open(
-                interaction.guild.id,
-                now,
-                RACE_CACHE
-            ):
-                await interaction.followup.send(
-                    "Sprint predictions are closed.",
-                    ephemeral=True)
+            if not self.view.sprint_winner or not self.view.sprint_pole:
+                await interaction.followup.send("❌ Please select both predictions first.", ephemeral=True)
                 return
-            
-            if not self.view2.sprint_winner or not self.view2.sprint_pole:
-                await interaction.followup.send(
-                    "Please fill all sprint predictions",
-                    ephemeral=True)
-                return
-            
-            user_id = interaction.user.id
-            sprint_predictions[user_id] = {
-                "User_ID": interaction.user.id,
-                "Sprint_Winner": self.view2.sprint_winner,
-                "Sprint_Pole": self.view2.sprint_pole,
-            }
 
             save_sprint_predictions(
                 interaction.guild.id,
@@ -490,30 +895,60 @@ class SprintSubmitButton(discord.ui.Button):
                 interaction.user.name,
                 int(RACE_CACHE.get("race_number")),
                 RACE_CACHE.get("race_name"),
-                self.view2.sprint_winner,
-                self.view2.sprint_pole
-    )
+                self.view.sprint_winner,
+                self.view.sprint_pole
+            )
 
+            await interaction.followup.send("✅ Sprint predictions recorded!", ephemeral=True)
+            self.view.stop()
 
-            await interaction.followup.send(
-                "✅ Your sprint predictions have been recorded.",
-                ephemeral=True)
-            
-            self.view2.stop()
         except Exception:
             logger.exception("SprintSubmit error")
+
+
+class SprintPredictionView(discord.ui.View):
+    def __init__(self, sprint_winner=None, sprint_pole=None, closed=False):
+        super().__init__(timeout=300)
+        self.sprint_winner = sprint_winner
+        self.sprint_pole = sprint_pole
+
+        self.add_item(SprintWinnerSelect(sprint_winner))
+        self.add_item(SprintPoleSelect(sprint_pole))
+
+        submit_btn = SprintSubmitButton()
+        submit_btn.disabled = closed
+        self.add_item(submit_btn)
+
+        if closed:
+            for child in self.children:
+                if isinstance(child, discord.ui.Select):
+                    child.disabled = True
 
 @bot.tree.command(name="sprint_predict", description="Make your sprint predictions")
 async def sprint_predict(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(f"Make your sprint predictions for the {RACE_CACHE.get('race_name')} Sprint:",
-                                             view=SprintPredictionView(),
-                                             ephemeral=True)
+
+        race_number = int(RACE_CACHE.get("race_number"))
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        closed = not sprint_predictions_open(guild_id, get_now(), RACE_CACHE)
+
+        existing = fetch_sprint_preds(guild_id, user_id, race_number)
+
+        sprint_winner = existing['sprint_winner'] if existing else None
+        sprint_pole = existing['sprint_pole'] if existing else None
+
+        view = SprintPredictionView(sprint_winner, sprint_pole, closed=closed)
+        await interaction.followup.send(
+            f"🏎️ **{RACE_CACHE.get('race_name')} Sprint Predictions**",
+            view=view,
+            ephemeral=True
+        )
+
     except Exception:
         logger.exception("Sprint prediction error")
 
-    
 #Force Points
 @bot.tree.command(name="force_points", description="Give points to a user(MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -572,96 +1007,10 @@ async def force_points_error(interaction: discord.Interaction, error):
         logger.exception("force_points_error error")
         return []
 
-#Constructors Predict
-class ConstructorView(discord.ui.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=300)
-        self.guild_id = guild_id
-        for c in CONSTRUCTORS:
-            self.add_item(ConstructorButton(c))
-        
-        now = get_now()
-        if not predictions_open(guild_id, now, RACE_CACHE):
-            for child in self.children:
-                child.disabled = True
-
-class ConstructorButton(discord.ui.Button):
-    def __init__(self, constructor):
-        super().__init__(label=constructor, style=discord.ButtonStyle.grey)
-        self.constructor = constructor
-
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            now = get_now()
-
-            if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-                for child in self.view.children:
-                    child.disabled = True
-                await interaction.edit_original_response(
-                    content="🔒 Predictions are closed.",
-                    view=self.view
-                )
-                return
-
-            save_constructor_prediction(
-                interaction.guild.id,
-                interaction.user.id,
-                interaction.user.name,
-                int(RACE_CACHE.get("race_number")),
-                RACE_CACHE.get("race_name"),
-                self.constructor
-            )
-
-            # Highlight selected button
-            for child in self.view.children:
-                if isinstance(child, ConstructorButton):
-                    child.style = discord.ButtonStyle.grey
-            self.style = discord.ButtonStyle.green
-
-            await interaction.edit_original_response(
-                content=f"✅ Your prediction for the winning constructor is **{self.constructor}**.",
-                view=self.view
-            )
-
-        except Exception:
-            logger.exception("ConstructorButton callback error")
-
-@bot.tree.command(name="constructor_predict", description="Predict the winning constructor")
-async def constructor_prediction_cmd(interaction: discord.Interaction):
-    try:
-        await interaction.response.defer(ephemeral=True)
-        now = get_now()
-
-        if not predictions_open(interaction.guild.id, now, RACE_CACHE):
-            await interaction.followup.send("⛔ Predictions are closed.", ephemeral=True)
-            return
-
-        # Check if user already has a prediction and highlight it
-        existing = safe_fetch_one(
-            "SELECT constructor_winner FROM race_predictions WHERE guild_id = %s AND user_id = %s AND race_number = %s",
-            (interaction.guild.id, interaction.user.id, int(RACE_CACHE.get("race_number")))
-        )
-
-        view = ConstructorView(interaction.guild.id)
-
-        if existing and existing['constructor_winner']:
-            for child in view.children:
-                if isinstance(child, ConstructorButton) and child.constructor == existing['constructor_winner']:
-                    child.style = discord.ButtonStyle.green
-
-        await interaction.followup.send(
-            f"Select the constructor you think will score the most points at the **{RACE_CACHE.get('race_name')}**:",
-            view=view,
-            ephemeral=True
-        )
-
-    except Exception:
-        logger.exception("constructor_prediction_cmd error")    
-
+@bot.tree.command(name="prediction_lock", description="Manually un/lock race/sprint predictions. (MODS ONLY)")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.choices(
-    prediction=[
+    pred_type=[
         app_commands.Choice(name="Race", value="race"),
         app_commands.Choice(name="Sprint", value="sprint"),
     ],
@@ -673,18 +1022,18 @@ async def constructor_prediction_cmd(interaction: discord.Interaction):
 )
 async def pred_lock(
     interaction: discord.Interaction,
-    prediction: app_commands.Choice[str],
+    pred_type: app_commands.Choice[str],
     state: app_commands.Choice[str]
 ):
     try:
         await interaction.response.defer(ephemeral=False)
         if state.value == "AUTO":
-            set_manual_lock(interaction.guild.id, prediction.value,  None)
-            msg = f"⚙️ **{prediction.name} predictions set to AUTO mode.**"
+            set_manual_lock(interaction.guild.id, pred_type.value,  None)
+            msg = f"⚙️ **{pred_type.name} predictions set to AUTO mode.**"
         else:
-            set_manual_lock(interaction.guild.id, prediction.value, state.value)
+            set_manual_lock(interaction.guild.id, pred_type.value, state.value)
             emoji = "🔒" if state.value == "LOCKED" else "🔓"
-            msg = f"{emoji} **{prediction.name} predictions manually {state.name.upper()}.**"
+            msg = f"{emoji} **{pred_type.name} predictions manually {state.name.upper()}.**"
 
         await interaction.channel.send(msg)
         await interaction.followup.send("Done.", ephemeral=True)
@@ -694,13 +1043,12 @@ async def pred_lock(
             str(interaction.user.id),
             str(interaction.user),
             "pred_lock",
-            prediction.value,
+            pred_type.value,
             state.value
         )
 
     except Exception:
         logger.exception("Prediction lock error")
-
 
 class SeasonPredictionView(discord.ui.View):
     def __init__(self):
@@ -868,9 +1216,11 @@ async def leaderboard(interaction: discord.Interaction):
 GUIDE_DICTIONARY = {
     "Race Predictions": 
                     {"/race_predict": 
-                    "Make your race predictions.\n\nPredict the Podium, Polesitter and Fastest Lap of the race.\n\n*Predictions will lock at the start of Qualifying.*",
-                    "/constructor_predict":
-                    "Predict the constructor that will score the most points in a race.\n\n*Predictions will lock at the start of Qualifying.*",
+                    """Make your race predictions.
+                    \n\nPredict the Podium, Polesitter, Fastest Lap and Winning Constructor of the race.
+                    \n\n*Note: Winning Constructor is the constructor who scored the most points.*
+                    \n\nAlso make your bold prediction for the race.
+                    \n\n*Predictions will lock at the start of Qualifying.*""",
                     "/race_bold_predict":
                     "Make your bold predictions for the race.\n\nThese will be pinned before the start of Qualifying for discussion if a channel is set\n\n*Predictions will lock at the start of Qualifying*",
                     "/sprint_predict": 
@@ -897,6 +1247,8 @@ GUIDE_DICTIONARY = {
     "MOD Commands":
                     {"*MODS ONLY*":
                      "These commands can only be used by the moderators of a server",
+                     "/toggle_bold_predictions":
+                     "Toggle whether to receive the list of bold predictions before every race in the set channel.",
                      "/force_points":
                      "Manually give/deduct points to/from user.",
                      "/prediction_lock":
@@ -923,6 +1275,11 @@ GUIDE_DICTIONARY = {
                      "View this guide.\n\n(Congratulations! If you're here, you already know how to use this!)"),
     "Application Did Not Respond?":
                     ("This issue may have occurred due to temporary exhaustion of the available RAM. \n\n Please try again after a couple of minutes."),
+    "Versions & Changelog":
+                    {"/version":
+                     "View the current version and release date.",
+                     "/whatsnew":
+                     "View new features and bug fixes."},
     "Want to help improve this bot?":
                     ("[View this bot's GitHub repository](https://github.com/TheRocketeer314/F1DiscordPredictionsBot) to open an issue or submit a pull request.\n\nThanks! -\n      TheRocketeer314")}
 
@@ -1853,7 +2210,32 @@ async def update_leaderboard_cmd(interaction: discord.Interaction):
     except Exception:
         logger.exception("update_leaderboard error")
 
-@tasks.loop(minutes=60/TIME_MULTIPLE)
+@bot.tree.command(name="toggle_bold_predictions", description="Toggle bold prediction messages on or off (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def toggle_bold_predictions(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild.id
+        currently_opted_out = is_bold_pred_opted_out(guild_id)
+        set_bold_pred_optout(guild_id, not currently_opted_out)
+
+        if currently_opted_out:
+            await interaction.followup.send("✅ Bold prediction messages are now **enabled** for this server.", ephemeral=True)
+        else:
+            await interaction.followup.send("✅ Bold prediction messages are now **disabled** for this server.", ephemeral=True)
+
+    except Exception:
+        logger.exception("toggle_bold_predictions error")
+
+@toggle_bold_predictions.error
+async def toggle_bold_predictions_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You don't have permission to use this command.",
+            ephemeral=True
+        )
+
+@tasks.loop(minutes=max(1, 60/TIME_MULTIPLE))
 async def bold_predictions_publisher():
     try:
         race_number = RACE_CACHE.get("race_number")
@@ -1861,8 +2243,6 @@ async def bold_predictions_publisher():
         lock_time = RACE_CACHE.get("lock_time")
 
         now = get_now()
-        logger.info("NOW: %s", now)
-        logger.info("LOCK TIME: %s", lock_time)
 
         if not race_number or not lock_time:
             return
@@ -1874,14 +2254,18 @@ async def bold_predictions_publisher():
         for guild in bot.guilds:
             try:
                 guild_id = guild.id
-                preds = fetch_bold_predictions(guild_id, race_number=race_number)
-                logger.info("%s (%s) PRED COUNT: %s", guild.name, guild_id, len(preds))
 
-                # render message
+                # Check opt out
+                if is_bold_pred_opted_out(guild_id):
+                    continue
+
+                preds = fetch_bold_predictions(guild_id, race_number=race_number)
                 lines = [
                     f"**Bold Predictions — {race_name}**",
                     "",
-                    f"Lock in you predictions before Qualifying! \nSubmissions lock in <t:{int(lock_time.timestamp())}:R>",
+                    f"Lock in your predictions before Qualifying! \nSubmissions lock <t:{int(lock_time.timestamp())}:R>",
+                    "",
+                    "*This message can be turned off by moderators using /toggle_bold_predictions.*",
                     ""
                 ]
                 if preds:
@@ -1892,15 +2276,13 @@ async def bold_predictions_publisher():
 
                 content = "\n".join(lines)
 
-                # get channel
                 channel_id = get_prediction_channel(guild_id)
                 if not channel_id:
                     try:
                         first_channel = next(
-                            ch for ch in guild.text_channels 
+                            ch for ch in guild.text_channels
                             if ch.permissions_for(guild.me).send_messages
                         )
-                        # Only send if we haven't already
                         existing_warning = get_persistent_message(guild_id, "no_channel_warning")
                         if not existing_warning:
                             msg = await first_channel.send(
@@ -1908,41 +2290,61 @@ async def bold_predictions_publisher():
                             )
                             await msg.pin()
                             save_persistent_message(guild_id, "no_channel_warning", first_channel.id, msg.id)
-                            logger.info("Sent no-channel warning in guild %s", guild.name)
-                    
                     except StopIteration:
                         logger.warning("No accessible text channels in guild %s", guild.name)
                     continue
-
+                
                 try:
                     channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-                
                 except discord.NotFound:
                     logger.exception("Channel %s not found in guild %s", channel_id, guild.name)
                     continue
 
-                # send or edit message
-                existing = get_persistent_message(guild_id, "bold_predictions")
+                perms = channel.permissions_for(guild.me)
+                logger.debug("Bot permissions in %s: manage_messages=%s, read_messages=%s, send_messages=%s", 
+                    channel.name, perms.manage_messages, perms.read_messages, perms.send_messages)
+
+                current_key = f"bold_predictions_{race_number}"
+                existing = get_persistent_message(guild_id, current_key)
+
                 if existing:
+                    # Edit existing message for this race
                     try:
                         msg = await channel.fetch_message(existing["message_id"])
                         await msg.edit(content=content)
-                        logger.info("Edited existing prediction message in %s", guild.name)
+                        logger.info("Edited bold pred message in %s", guild.name)
                     except discord.NotFound:
-                        msg = await channel.send(content)
+                       msg = await channel.send(content)
+                    try:
                         await msg.pin()
-                        save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
-                        logger.info("Old message deleted, sent new one in %s", guild.name)
-
+                    except discord.Forbidden:
+                        logger.warning("No permission to pin in %s", guild.name)
+                    save_persistent_message(guild_id, current_key, channel.id, msg.id)
                 else:
+                    # Delete previous race's message
+                    if race_number > 1:
+                        prev_key = f"bold_predictions_{race_number - 1}"
+                        prev = get_persistent_message(guild_id, prev_key)
+                        if prev:
+                            try:
+                                prev_msg = await channel.fetch_message(prev["message_id"])
+                                await prev_msg.unpin()
+                                await prev_msg.delete()
+                                logger.info("Deleted previous bold pred message in %s", guild.name)
+                            except discord.NotFound:
+                                pass
+                            except discord.Forbidden:
+                                logger.warning("No permission to delete previous bold pred message in %s", guild.name)
+
                     msg = await channel.send(content)
-                    await msg.pin()
-                    save_persistent_message(guild_id, "bold_predictions", channel.id, msg.id)
-                    logger.info("Sent new prediction message in %s", guild.name)
-
-
+                    try:
+                        await msg.pin()
+                    except discord.Forbidden:
+                        logger.warning("No permission to pin in %s", guild.name)
+                    save_persistent_message(guild_id, current_key, channel.id, msg.id)
+                    logger.info("Sent new bold pred message in %s", guild.name)
             except Exception:
-                logger.exception("bold_predictions_publisher error in guild- %s", guild_id)
+                logger.exception("bold_predictions_publisher error in guild %s", guild_id)
 
     except Exception:
         logger.exception("bold_predictions_publisher error")
