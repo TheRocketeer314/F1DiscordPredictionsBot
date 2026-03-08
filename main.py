@@ -1027,13 +1027,17 @@ async def view_predictions(interaction: discord.Interaction, user: discord.Membe
 
         if race:
             race_row = await asyncio.to_thread(get_race_number, race)
-            req_race = race_row['race_number'] if race_row else race_num
+            if not race_row:
+                await interaction.followup.send(
+                    f"❌ No data found for **{race}** yet — predictions may not be stored.",
+                    ephemeral=True
+                )
+                return
+            req_race = race_row['race_number']
             display_race = race
         else:
             req_race = race_num
             display_race = race_name
-
-        req_race = race_row['race_number'] if race_row else int(RACE_CACHE.get("race_number"))
 
         sprint_row = await asyncio.to_thread(get_is_sprint, req_race)
         is_sprint = sprint_row['is_sprint'] if sprint_row else RACE_CACHE.get("is_sprint", False)

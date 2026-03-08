@@ -365,7 +365,7 @@ def set_bold_pred_optout(guild_id, opted_out: bool):
 def get_race_number(race_name):
     return safe_fetch_one(
         "SELECT race_number FROM race_results WHERE race_name = %s",
-        (race_name))
+        (race_name,))
 
 def save_race_predictions(guild_id, user_id, username, race_number, race_name,
                           pos1=None, pos2=None, pos3=None, 
@@ -425,7 +425,7 @@ def save_sprint_predictions(guild_id, user_id, username, race_number, race_name,
 def get_is_sprint(race_number):
     return safe_fetch_one(
         "SELECT is_sprint FROM race_results WHERE race_number = %s",
-        (race_number))
+        (race_number,))
 
 def fetch_sprint_preds(guild_id, user_id, race_number):
         return safe_fetch_one(
