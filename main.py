@@ -317,7 +317,6 @@ async def whatsnew(interaction: discord.Interaction):
         color=discord.Color.blue()
     )
 
-
     if features:
         embed.add_field(
             name="New Features",
