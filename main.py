@@ -303,6 +303,7 @@ CONSTRUCTORS = [
 async def version(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🏎️ F1 Predictions Bot",
+        description=f"Version {__version__}",
         color=discord.Color.red()
     )
 
@@ -316,29 +317,27 @@ async def version(interaction: discord.Interaction):
 @bot.tree.command(name="whatsnew", description="Show recent bot updates")
 async def whatsnew(interaction: discord.Interaction):
 
-    version = __version__
-    features, fixes = get_changelog()
+    version, info = get_changelog()
 
     embed = discord.Embed(
-        title=f"What's New in {version}",
-        color=discord.Color.blue()
+        title=f"🚀 What's New — {version}",
+        description=f"Released {info['date']}",
+        color=discord.Color.red()
     )
 
-    if features:
+    if info["features"]:
         embed.add_field(
-            name="New Features",
-            value="\n".join(f"• {f}" for f in features[:5]),
+            name="Features",
+            value="\n".join(f"• {f}" for f in info["features"]),
             inline=False
         )
 
-    if fixes:
+    if info["fixes"]:
         embed.add_field(
-            name="Bug Fixes",
-            value="\n".join(f"• {f}" for f in fixes[:5]),
+            name="Fixes",
+            value="\n".join(f"• {f}" for f in info["fixes"]),
             inline=False
         )
-
-    embed.set_footer(text="Version history generated from Git commits")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 

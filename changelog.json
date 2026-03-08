@@ -1,0 +1,15 @@
+{
+    "v0.4.0": {
+        "date": "2026-03-080",
+        "features": [
+            "Added mod command to rescore all finished races.",
+            "Added ability to view past races in /view_predictions.",
+            "Added feature to view correct bold predictions of a server.",
+            "Added different tiers of difficulty for bold predictions."
+        ],
+        "fixes": [
+            "Fixed changelog system",
+            "Fixed bold prediction scoring error."
+        ]
+    }
+}

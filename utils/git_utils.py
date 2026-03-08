@@ -1,21 +1,9 @@
-import subprocess
-    
+import json
+
 def get_changelog():
-    try:
-        log = subprocess.check_output(
-            ["git", "log", "--pretty=format:%s", "-n", "15"]
-        ).decode()
+    with open("changelog.json", "r") as f:
+        data = json.load(f)
 
-        features = []
-        fixes = []
-
-        for commit in log.split("\n"):
-            if commit.startswith("feat:"):
-                features.append(commit[5:].strip())
-            elif commit.startswith("fix:"):
-                fixes.append(commit[4:].strip())
-
-        return features.reverse(), fixes.reverse()
-
-    except:
-        return [], []
+    # The first key in a JSON dict is the latest version
+    latest_version = list(data.keys())[0]
+    return latest_version, data[latest_version]
