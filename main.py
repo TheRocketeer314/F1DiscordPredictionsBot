@@ -64,7 +64,7 @@ from keep_alive import keep_alive
 import logging
 import sys
 from version import __version__, __release_date__
-from utils.git_utils import get_changes
+from utils.git_utils import get_changelog
 from CommandsGuide import GUIDE_DICTIONARY
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -310,7 +310,7 @@ async def version(interaction: discord.Interaction):
 async def whatsnew(interaction: discord.Interaction):
 
     version = __version__
-    features, fixes = get_changes()
+    features, fixes = get_changelog()
 
     embed = discord.Embed(
         title=f"What's New in {version}",

@@ -1,43 +1,21 @@
 import subprocess
-
-def get_version():
-    try:
-        return subprocess.check_output(
-            ["git", "describe", "--tags", "--abbrev=0"]
-        ).decode().strip()
-    except:
-        return "unknown"
     
-def get_release_date():
-    try:
-        tag = subprocess.check_output(
-            ["git", "describe", "--tags", "--abbrev=0"]
-        ).decode().strip()
-
-        date = subprocess.check_output(
-            ["git", "log", "-1", "--format=%ai", tag]
-        ).decode().strip().split(" ")[0]
-
-        return date
-    except:
-        return "unknown"
-    
-def get_changes(limit=20):
+def get_changelog():
     try:
         log = subprocess.check_output(
-            ["git", "log", f"-{limit}", "--pretty=%s"]
-        ).decode().split("\n")
+            ["git", "log", "--pretty=format:%s", "-n", "15"]
+        ).decode()
 
         features = []
         fixes = []
 
-        for msg in log:
-            if msg.startswith("feat:"):
-                features.append(msg[6:])
-            elif msg.startswith("fix:"):
-                fixes.append(msg[5:])
+        for commit in log.split("\n"):
+            if commit.startswith("feat:"):
+                features.append(commit[5:].strip())
+            elif commit.startswith("fix:"):
+                fixes.append(commit[4:].strip())
 
-        return features, fixes
+        return features.reverse(), fixes.reverse()
 
     except:
         return [], []
