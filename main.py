@@ -1302,6 +1302,7 @@ async def pred_lock(
             emoji = "🔒" if state.value == "LOCKED" else "🔓"
             msg = f"{emoji} **{pred_type.name} predictions manually {state.name.upper()}.**"
 
+
         await interaction.channel.send(msg)
         await interaction.followup.send("Done.", ephemeral=True)
 
