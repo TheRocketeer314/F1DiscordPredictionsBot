@@ -66,6 +66,7 @@ import sys
 from version import __version__, __release_date__
 from utils.git_utils import get_changelog
 from CommandsGuide import GUIDE_DICTIONARY
+import subprocess
 
 sys.stdout.reconfigure(line_buffering=True)
 try:
@@ -224,6 +225,12 @@ async def on_ready():
     if not bold_predictions_publisher.is_running():
         bold_predictions_publisher.start()
         logger.info("Bold loop started")
+
+    log = subprocess.check_output(
+        ["git", "log", "--pretty=format:%s", "-n", "10"]
+    ).decode()
+
+    print("COMMITS:", log)
 
     for guild in bot.guilds:
         upsert_guild(guild.id, guild.name)
