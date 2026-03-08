@@ -26,3 +26,9 @@ CRAZY_PRED_POINTS = {
     "Medium": int(os.getenv("CRAZY_MEDIUM_POINTS", 10)),
     "Hard": int(os.getenv("CRAZY_HARD_POINTS", 20)),
 }
+
+BOLD_PRED_POINTS = {
+    "Easy": int(os.getenv("BOLD_EASY_POINTS", 4)),
+    "Medium": int(os.getenv("BOLD_MEDIUM_POINTS", 8)),
+    "Hard": int(os.getenv("BOLD_HARD_POINTS", 15)),
+}

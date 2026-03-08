@@ -12,9 +12,12 @@ logger = logging.getLogger(__name__)
 async def season_calender(season):
     try:
         schedule = await asyncio.to_thread(fastf1.get_event_schedule, season)
-        return schedule['EventName'].tolist()
+        return [
+            event for event in schedule['EventName'].tolist()
+            if 'test' not in event.lower()
+        ]
     except Exception:
-        logger.exception("Failed to fetch season calendar for %s", season) 
+        logger.exception("Failed to fetch season calendar for %s", season)
 
         
 async def refresh_race_cache(now=None, year=None):

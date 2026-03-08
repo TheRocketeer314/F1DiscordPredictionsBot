@@ -68,7 +68,7 @@ def score_sprint_pole(pred, result):
     
 def score_constructor(pred, result):
     if pred["constructor_winner"] == result["constructor"]:
-        return 3
+        return 2
     return 0
 
 def score_weekend(pred, result):

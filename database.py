@@ -9,8 +9,6 @@ import socket
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-BOLD_PRED_POINTS = int(os.getenv('BOLD_PRED_POINTS', 10))
-
 #Force IPv4 
 orig_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(*args, **kwargs):
@@ -243,6 +241,8 @@ def init_db():
                 user_id BIGINT NOT NULL,
                 username TEXT NOT NULL,
                 race_name TEXT NOT NULL,
+                difficulty TEXT,
+                points INTEGER DEFAULT 0,
                 PRIMARY KEY (guild_id, user_id, race_name)
             );
         """)
@@ -362,6 +362,11 @@ def set_bold_pred_optout(guild_id, opted_out: bool):
             (guild_id,)
         )
 
+def get_race_number(race_name):
+    return safe_fetch_one(
+        "SELECT race_number FROM race_results WHERE race_name = %s",
+        (race_name))
+
 def save_race_predictions(guild_id, user_id, username, race_number, race_name,
                           pos1=None, pos2=None, pos3=None, 
                           pole=None, fastest_lap=None, constructor_winner=None):
@@ -393,8 +398,8 @@ def fetch_existing_predictions(guild_id, user_id, race_number):
         (guild_id, user_id, race_number)
     )
     bold_pred = safe_fetch_one(
-        "SELECT prediction FROM bold_predictions "
-        "WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+        """SELECT prediction FROM bold_predictions 
+         WHERE guild_id = %s AND user_id = %s AND race_number = %s""",
         (guild_id, user_id, race_number)
     )
     return race_pred, bold_pred
@@ -416,10 +421,16 @@ def save_sprint_predictions(guild_id, user_id, username, race_number, race_name,
         (guild_id, user_id, username, race_number, race_name, sprint_winner, sprint_pole)
     )
     
+
+def get_is_sprint(race_number):
+    return safe_fetch_one(
+        "SELECT is_sprint FROM race_results WHERE race_number = %s",
+        (race_number))
+
 def fetch_sprint_preds(guild_id, user_id, race_number):
         return safe_fetch_one(
-            "SELECT sprint_winner, sprint_pole FROM race_predictions "
-            "WHERE guild_id = %s AND user_id = %s AND race_number = %s",
+            """SELECT sprint_winner, sprint_pole FROM race_predictions 
+             WHERE guild_id = %s AND user_id = %s AND race_number = %s""",
             (guild_id, user_id, race_number)
         )
 
@@ -500,7 +511,7 @@ def save_race_results(data):
             pos1, pos2, pos3,
             pole, quali_second, fastest_lap, constructor,
             is_sprint
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,%s)
     """, (
         data["race_number"],
         data["race_name"],
@@ -520,12 +531,14 @@ def save_sprint_results(data):
     safe_execute("""
         UPDATE race_results
         SET sprint_winner= %s,
-            sprint_pole=%s
+            sprint_pole=%s,
+            is_sprint=%s
         WHERE race_number=%s
     """, (
         data["sprint_winner"],
         data["sprint_pole"],
-        data["race_number"]
+        True,
+        data["race_number"],
     ))
 
 def save_final_champions(season, wdc, wdc_second, wcc, wcc_second):
@@ -574,6 +587,25 @@ def mark_race_scored(guild_id, race_number):
         VALUES (%s, %s)
         ON CONFLICT DO NOTHING
     """, (guild_id, race_number))
+
+def clear_race_scores(guild_id):
+    safe_execute(
+        "DELETE FROM race_scores WHERE guild_id = %s",
+        (guild_id,)
+    )
+
+def get_all_scored_races(guild_id):
+    rows = safe_fetch_all(
+        "SELECT race_number FROM scored_races WHERE guild_id = %s ORDER BY race_number ASC",
+        (guild_id,)
+    )
+    return [row['race_number'] for row in rows] if rows else []
+
+def clear_scored_races(guild_id):
+    safe_execute(
+        "DELETE FROM scored_races WHERE guild_id = %s",
+        (guild_id,)
+    )
 
 def is_season_scored(guild_id, season):
     row = safe_fetch_one(
@@ -632,7 +664,7 @@ def update_leaderboard(guild_id):
 
                     UNION ALL
 
-                    SELECT guild_id, user_id, username, %s as points
+                    SELECT guild_id, user_id, username, points
                     FROM correct_bold_predictions
                     WHERE guild_id = %s
                         
@@ -683,7 +715,7 @@ def update_leaderboard(guild_id):
                     correct_poles DESC,
                     correct_fastest_laps DESC,
                     correct_constructors DESC;
-            """, (guild_id, guild_id, guild_id, BOLD_PRED_POINTS, guild_id, guild_id, guild_id))
+            """, (guild_id, guild_id, guild_id, guild_id, guild_id, guild_id))
 
             conn.commit()
             cur.close()
@@ -693,6 +725,12 @@ def update_leaderboard(guild_id):
             logger.exception("Error updating leaderboard for guild %s", guild_id)
         finally:
             conn.close()
+
+def clear_leaderboard(guild_id):
+    safe_execute(
+        "DELETE FROM leaderboard WHERE guild_id = %s",
+        (guild_id,)
+    )
 
 def get_top_n(guild_id, n):
     return safe_fetch_all("""
@@ -833,16 +871,28 @@ def fetch_bold_predictions(guild_id, race_number=None, race_name=None):
     else:
         return []
     
-def save_correct_bold_prediction(guild_id, user_id, username, race_name):
-    safe_execute("""
-        INSERT INTO correct_bold_predictions (guild_id, user_id, username, race_name)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT DO NOTHING
-    """, (guild_id, user_id, username, race_name))
+def save_correct_bold_prediction(guild_id, user_id, username, race_name, difficulty, points):
+    safe_execute(
+        """
+        INSERT INTO correct_bold_predictions (guild_id, user_id, username, race_name, difficulty, points)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (guild_id, user_id, race_name) DO UPDATE SET
+            username = excluded.username,
+            difficulty = excluded.difficulty,
+            points = excluded.points
+        """,
+        (guild_id, user_id, username, race_name, difficulty, points)
+    )
+
+def remove_correct_bold_prediction(guild_id, user_id, race_name):
+    safe_execute(
+        "DELETE FROM correct_bold_predictions WHERE guild_id = %s AND user_id = %s AND race_name = %s",
+        (guild_id, user_id, race_name)
+    )
 
 def get_correct_bold_predictions(guild_id, user_id):
     return safe_fetch_all("""
-        SELECT cbp.race_name, bp.prediction
+        SELECT cbp.race_name, cbp.difficulty, cbp.points, bp.prediction
         FROM correct_bold_predictions cbp
         LEFT JOIN bold_predictions bp 
             ON cbp.guild_id = bp.guild_id 
@@ -851,6 +901,18 @@ def get_correct_bold_predictions(guild_id, user_id):
         WHERE cbp.guild_id = %s AND cbp.user_id = %s
         ORDER BY cbp.race_name ASC
     """, (guild_id, user_id))
+
+def get_correct_bold_predictions_of_server(guild_id, race_name):
+    return safe_fetch_all("""
+        SELECT cbp.username, cbp.difficulty, cbp.points, bp.prediction
+        FROM correct_bold_predictions cbp
+        LEFT JOIN bold_predictions bp
+            ON cbp.guild_id = bp.guild_id
+            AND cbp.user_id = bp.user_id
+            AND cbp.race_name = bp.race_name
+        WHERE cbp.guild_id = %s AND cbp.race_name = %s
+        ORDER BY cbp.username ASC
+    """, (guild_id, race_name))
 
 def prediction_state_log(guild_id, user_id, username, command, prediction, state):
     safe_execute("""
