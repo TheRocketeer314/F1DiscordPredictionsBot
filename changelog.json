@@ -1,6 +1,16 @@
-{
-    "v0.4.0": {
-        "date": "2026-03-080",
+[
+    {
+        "version": "v0.4.1",
+        "date": "2026-03-09",
+        "features": [
+            "Added pagination to leaderboard",
+            "Added mod command to show Top 10 publicly"
+        ],
+        "fixes": []
+    },
+    {
+        "version": "v0.4.0",
+        "date": "2026-03-08",
         "features": [
             "Added mod command to rescore all finished races.",
             "Added ability to view past races in /view_predictions.",
@@ -12,4 +22,4 @@
             "Fixed bold prediction scoring error."
         ]
     }
-}
+]

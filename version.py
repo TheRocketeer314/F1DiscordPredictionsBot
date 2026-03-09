@@ -1,2 +1,2 @@
-__version__ = "v0.4.0"
-__release_date__ = "2026-03-08"
+__version__ = "v0.4.1"
+__release_date__ = "2026-03-09"

@@ -25,6 +25,7 @@ from database import (init_db,
                       get_manual_lock,
                       reset_locks_on_cache_refresh,
                       add_points,
+                      get_full_leaderboard,
                       get_top_n,
                       get_user_rank,
                       save_crazy_prediction,
@@ -64,7 +65,7 @@ from keep_alive import keep_alive
 import logging
 import sys
 from version import __version__, __release_date__
-from utils.git_utils import get_changelog
+from utils.git_utils import get_changelog, get_changes
 from CommandsGuide import GUIDE_DICTIONARY
 import subprocess
 
@@ -226,12 +227,6 @@ async def on_ready():
         bold_predictions_publisher.start()
         logger.info("Bold loop started")
 
-    log = subprocess.check_output(
-        ["git", "log", "--pretty=format:%s", "-n", "10"]
-    ).decode()
-
-    print("COMMITS:", log)
-
     for guild in bot.guilds:
         upsert_guild(guild.id, guild.name)
         guild_default_lock(guild.id)
@@ -314,30 +309,29 @@ async def version(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="whatsnew", description="Show recent bot updates")
+@bot.tree.command(name="whatsnew", description="Show latest patch and last minor update")
 async def whatsnew(interaction: discord.Interaction):
+    patch, minor = get_changelog()
 
-    version, info = get_changelog()
+    patch_changes = get_changes(patch)
+    minor_changes = get_changes(minor)
 
     embed = discord.Embed(
-        title=f"🚀 What's New — {version}",
-        description=f"Released {info['date']}",
+        title="🚀 What's New",
         color=discord.Color.red()
     )
 
-    if info["features"]:
-        embed.add_field(
-            name="Features",
-            value="\n".join(f"• {f}" for f in info["features"]),
-            inline=False
-        )
+    embed.add_field(
+        name=f"**Latest Patch — {patch['version']}**",
+        value="\n".join(patch_changes) or "No visible changes",
+        inline=False
+    )
 
-    if info["fixes"]:
-        embed.add_field(
-            name="Fixes",
-            value="\n".join(f"• {f}" for f in info["fixes"]),
-            inline=False
-        )
+    embed.add_field(
+        name=f"**Last Minor Update — {minor['version']}**",
+        value="\n".join(minor_changes) or "No visible changes",
+        inline=False
+    )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1463,33 +1457,103 @@ async def season_unlock(interaction: discord.Interaction):
     except Exception:
         logger.exception("Season lock error")
 
+class LeaderboardView(discord.ui.View):
+    def __init__(self, guild_id, user_name, current_page=0, items_per_page=10):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_name = user_name
+        self.current_page = current_page
+        self.items_per_page = items_per_page
+
+        all_users = get_full_leaderboard(guild_id)
+        self.rows = all_users
+        self.total_pages = max(1, (len(all_users) + items_per_page - 1) // items_per_page)
+
+        prev = discord.ui.Button(emoji="◀️", style=discord.ButtonStyle.grey, disabled=current_page == 0, row=0)
+        prev.callback = self.prev_callback
+        self.add_item(prev)
+
+        next_ = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.grey, disabled=current_page == self.total_pages - 1, row=0)
+        next_.callback = self.next_callback
+        self.add_item(next_)
+
+    def get_content(self):
+        start = self.current_page * self.items_per_page
+        chunk = self.rows[start:start + self.items_per_page]
+
+        lines = [f"**🏆 Leaderboard — Page {self.current_page + 1}/{self.total_pages}**\n"]
+        for i, row in enumerate(chunk):
+            pos = start + i + 1
+            marker = " ◄" if row['username'] == self.user_name else ""
+            lines.append(f"{pos}. {row['username']} — {row['total_points']} pts{marker}")
+
+        # Always show user's position at the bottom
+        user_pos = next((i + 1 for i, r in enumerate(self.rows) if r['username'] == self.user_name), None)
+        user_row = next((r for r in self.rows if r['username'] == self.user_name), None)
+        if user_row:
+            on_page = any(r['username'] == self.user_name for r in chunk)
+            if not on_page:
+                lines.append(f"\n**Your position: {user_pos}. {self.user_name} — {user_row['total_points']} pts**")
+        else:
+            lines.append("\n_You have no points yet._")
+
+        return "\n".join(lines)
+
+    async def prev_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = LeaderboardView(self.guild_id, self.user_name, self.current_page - 1, self.items_per_page)
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("LeaderboardView prev_callback error")
+
+    async def next_callback(self, interaction: discord.Interaction):
+        try:
+            new_view = LeaderboardView(self.guild_id, self.user_name, self.current_page + 1, self.items_per_page)
+            await interaction.response.edit_message(content=new_view.get_content(), view=new_view)
+        except Exception:
+            logger.exception("LeaderboardView next_callback error")
+
 @bot.tree.command(name="leaderboard", description="View the leaderboard")
 async def leaderboard(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
-        # Top 10
-        top10 = get_top_n(interaction.guild.id, 10)
-        top10_text = "\n".join([
-            f"{i+1}. {user} - {pts} pts          ◄" if user == interaction.user.name else f"{i+1}. {user} - {pts} pts"
-            for i, (user, pts) in enumerate(top10)
-        ])
-        # User rank
-        user_rank = get_user_rank(interaction.guild.id, interaction.user.name)
-        if user_rank:
-            rank, total_points = user_rank
-            # Highlight user if outside top 10
-            if rank > 10:
-                user_text = f"\n\n**{rank}. {interaction.user.name} - {total_points} pts**"
-            else:
-                user_text = ""  # already in top 10
-        else:
-            user_text = "\nYou have no points yet."
-
-        await interaction.followup.send(f"**Leaderboard**\n{top10_text}{user_text}",
-                                                ephemeral=True)
-
+        view = LeaderboardView(interaction.guild.id, interaction.user.name)
+        await interaction.followup.send(content=view.get_content(), view=view, ephemeral=True)
     except Exception:
         logger.exception("Leaderboard error")
+
+@bot.tree.command(name="show_leaderboard", description="Display the top 10 leaderboard publicly (MODS ONLY)")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(message="Optional message to display above the leaderboard")
+async def show_leaderboard(interaction: discord.Interaction, message: str = None):
+    try:
+        await interaction.response.defer(ephemeral=False)
+            
+        top10 = get_top_n(interaction.guild.id, 10)
+
+        if not top10:
+            await interaction.followup.send("❌ No leaderboard data yet!")
+            return
+
+        lines = []
+        if message:
+            lines.append(f"{message}\n")
+
+        lines.append("**🏆 Leaderboard — Top 10**\n")
+
+        for i, (user, pts) in enumerate(top10):
+            lines.append(f"{i+1}. {user} — {pts} pts")
+        lines.append("\n_Use `/leaderboard` to view the full leaderboard!_")
+
+        await interaction.followup.send("\n".join(lines))
+
+    except Exception:
+        logger.exception("show_leaderboard error")
+
+@show_leaderboard.error
+async def show_leaderboard_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
 
 class GuideSelect(discord.ui.Select):
     def __init__(self):

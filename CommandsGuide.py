@@ -42,6 +42,8 @@ GUIDE_DICTIONARY = {
                      "Toggle whether to receive the list of bold predictions before every race in the set channel.",
                      "/force_points":
                      "Manually give/deduct points to/from user.",
+                     "/show_leaderboard":
+                     "Display the Top 10 of the leaderboard to all users.\n\nOptional message: Display an optional message above the leaderboard",
                      "/prediction_lock":
                      "Manually lock/unlock race/sprint predictions.",
                      "/season_lock":

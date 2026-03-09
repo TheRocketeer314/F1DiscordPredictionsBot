@@ -674,10 +674,19 @@ def update_leaderboard(guild_id):
                     FROM scored_crazy_predictions
                     WHERE guild_id = %s
                 ),
+                latest_username AS (
+                    SELECT DISTINCT ON (guild_id, user_id) guild_id, user_id, username
+                    FROM race_predictions
+                    WHERE guild_id = %s
+                    ORDER BY guild_id, user_id, race_number DESC
+                ),
                 total AS (
-                    SELECT guild_id, user_id, MAX(username) as username, SUM(points) as total_points
-                    FROM combined_points
-                    GROUP BY guild_id, user_id
+                    SELECT cp.guild_id, cp.user_id, 
+                        COALESCE(lu.username, MAX(cp.username)) as username, 
+                        SUM(cp.points) as total_points
+                    FROM combined_points cp
+                    LEFT JOIN latest_username lu ON lu.user_id = cp.user_id AND lu.guild_id = cp.guild_id
+                    GROUP BY cp.guild_id, cp.user_id, lu.username
                 ),
                 tiebreakers AS (
                     SELECT 
@@ -715,7 +724,7 @@ def update_leaderboard(guild_id):
                     correct_poles DESC,
                     correct_fastest_laps DESC,
                     correct_constructors DESC;
-            """, (guild_id, guild_id, guild_id, guild_id, guild_id, guild_id))
+            """, (guild_id, guild_id, guild_id, guild_id, guild_id, guild_id, guild_id))
 
             conn.commit()
             cur.close()
@@ -746,6 +755,12 @@ def get_top_n(guild_id, n):
             correct_constructors DESC
         LIMIT %s
     """, (guild_id, n))
+
+def get_full_leaderboard(guild_id):
+    return safe_fetch_all(
+        "SELECT username, total_points FROM leaderboard WHERE guild_id = %s ORDER BY total_points DESC",
+        (guild_id,)
+    )
 
 def get_user_rank(guild_id, username):
     return safe_fetch_one("""
