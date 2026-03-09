@@ -28,7 +28,9 @@ CRAZY_PRED_POINTS = {
 }
 
 BOLD_PRED_POINTS = {
-    "Easy": int(os.getenv("BOLD_EASY_POINTS", 4)),
-    "Medium": int(os.getenv("BOLD_MEDIUM_POINTS", 8)),
-    "Hard": int(os.getenv("BOLD_HARD_POINTS", 15)),
+    "C1": int(os.getenv("BOLD_C1_POINTS", 4)),
+    "C2": int(os.getenv("BOLD_C2_POINTS", 6)),
+    "C3": int(os.getenv("BOLD_C3_POINTS", 8)),
+    "C4": int(os.getenv("BOLD_C4_POINTS", 10)),
+    "C5": int(os.getenv("BOLD_C5_POINTS", 12))
 }
