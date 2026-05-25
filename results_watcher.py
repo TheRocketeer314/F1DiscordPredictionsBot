@@ -51,16 +51,13 @@ async def poll_results_loop(bot):
             if sprint_data:
                 save_sprint_results(sprint_data)
 
-            shutil.rmtree(CACHE_DIR, ignore_errors=True)
-            CACHE_DIR.mkdir(exist_ok=True)
-            fastf1.Cache.enable_cache(str(CACHE_DIR))
-
             standings = await get_standings_leaders(race_num=race_num)
             if standings:
                 wdc_leader, wcc_leader = standings
                 save_championship_leaders(SEASON, wdc_leader, wcc_leader)
                 logger.info("Standings leaders saved: WDC=%s, WCC=%s", wdc_leader, wcc_leader)
 
+            #Redundant cache cleanup
             shutil.rmtree(CACHE_DIR, ignore_errors=True)
             CACHE_DIR.mkdir(exist_ok=True)
             fastf1.Cache.enable_cache(str(CACHE_DIR))
@@ -95,12 +92,25 @@ async def poll_results_loop(bot):
                 if channel_id:
                     channel = guild.get_channel(channel_id)
                     if channel:
-                        await channel.send(
-                        f"✅ **The {race_data['race_name']} has been scored!**\n"
-                        f"🥇 {race_data['pos1']}  🥈 {race_data['pos2']}  🥉 {race_data['pos3']}\n"
-                        f"🏁 Pole: {race_data['pole']}  ⚡ Fastest Lap: {race_data['fastest_lap']}\n"
-                        f"🏗️ Constructor: {race_data['winning_constructor']}"
-                    )
+                        if sprint_data:
+                            await channel.send(
+                            f"**The {race_data['race_name']} has been scored!**\n"
+                            f" *Race Results:*\n"
+                            f"| 1. {race_data['pos1']} | 2. {race_data['pos2']} | 3. {race_data['pos3']}\n"
+                            f"| Pole: {race_data['pole']} | Fastest Lap: {race_data['fastest_lap']}\n"
+                            f"| Constructor: {race_data['winning_constructor']}\n\n"
+                            f" *Sprint Results:*\n"
+                            f"| Winner: {sprint_data['sprint_winner']} | Pole: {sprint_data['sprint_pole']}"
+                        )
+                        
+                        else:
+                            await channel.send(
+                            f"**The {race_data['race_name']} has been scored!**\n"
+                            f" *Race Results:*\n"
+                            f"| 1. {race_data['pos1']} | 2. {race_data['pos2']} | 3. {race_data['pos3']}\n"
+                            f"| Pole: {race_data['pole']} | Fastest Lap: {race_data['fastest_lap']}\n"
+                            f"| Constructor: {race_data['winning_constructor']}\n\n"
+                        )
 
             logger.info("Sleeping 24 hours before checking for next race...")
             await asyncio.sleep(24 * 60 * 60 / TIME_MULTIPLE)
@@ -108,3 +118,9 @@ async def poll_results_loop(bot):
         except Exception :
             logger.exception("pole_results_loop crashed")
             await asyncio.sleep(60 * 60 / TIME_MULTIPLE)
+
+        finally:
+            #Cleaning cache and recreating it
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            CACHE_DIR.mkdir(exist_ok=True)
+            fastf1.Cache.enable_cache(str(CACHE_DIR))

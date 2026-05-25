@@ -243,8 +243,7 @@ async def sprint_results(year=None):
     try:
         # Sprint Qualifying session
         sprintquali_session = fastf1.get_session(year, finished_race, "Sprint Qualifying")
-        await asyncio.to_thread (sprintquali_session.load,
-                                 laps=False, telemetry=False, weather=False, messages=False)
+        await asyncio.to_thread (sprintquali_session.load)
         sprintquali_results = sprintquali_session.results
         if sprintquali_results.empty:
             logger.warning("Sprint Quali results are empty for %s", finished_race)

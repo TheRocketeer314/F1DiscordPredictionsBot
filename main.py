@@ -64,7 +64,6 @@ from scoring import score_race_for_guild, score_final_champions_for_guild
 from keep_alive import keep_alive
 import logging
 import sys
-from version import __version__, __release_date__
 from utils.git_utils import get_changelog, get_changes
 from CommandsGuide import GUIDE_DICTIONARY
 import subprocess
@@ -296,14 +295,16 @@ CONSTRUCTORS = [
 
 @bot.tree.command(name="version", description="Show bot version information")
 async def version(interaction: discord.Interaction):
+    patch, _ = get_changelog()
+
     embed = discord.Embed(
         title="🏎️ F1 Predictions Bot",
-        description=f"Version {__version__}",
+        description=f"Current Version",
         color=discord.Color.red()
     )
 
-    embed.add_field(name="Version", value=__version__, inline=True)
-    embed.add_field(name="Released", value=__release_date__, inline=True)
+    embed.add_field(name="Version", value=patch['version'], inline=True)
+    embed.add_field(name="Released", value=patch['date'], inline=True)
 
     embed.set_footer(text="Use /whatsnew to see recent features")
 

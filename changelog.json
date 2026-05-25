@@ -1,4 +1,15 @@
-[
+[   
+    {
+        "version": "v0.4.2",
+        "date": "2026-05-25",
+        "features": [],
+        "fixes": [
+            "Added fix to also display Sprint results in the 'Race scored' message on Sprint weekends.",
+            "Fixed error when specifically selecting current race in /view_predictions command.",
+            "Fixed Sprint Pole returning incorrect value from FastF1.",
+            "Cleaned up cache cleaning system by implementing cache cleaning in a 'finally' block outside the 'try'."
+        ]
+    },
     {
         "version": "v0.4.1",
         "date": "2026-03-09",
