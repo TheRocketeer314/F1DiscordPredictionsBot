@@ -310,52 +310,25 @@ async def get_final_champions_if_ready(year=None):
     return wdc_winner, wdc_second, wcc_winner, wcc_second
 
 async def get_race_end_time(now):
-    """Get the end time of the next unscored race."""
+    #Get the end time of the next upcoming race.
     try:
         schedule = await asyncio.to_thread(fastf1.get_event_schedule, SEASON)
     except Exception:
         logger.exception("Failed to fetch season calendar for %s", SEASON)
         return None
 
-    
     schedule["Session5DateUtc"] = pd.to_datetime(
         schedule["Session5DateUtc"],
         utc=True,
         errors="coerce"
     )
-    
+
     schedule["race_end"] = schedule["Session5DateUtc"] + pd.Timedelta(hours=12)
-    
-    # Get all finished races
-    finished = schedule[schedule["race_end"] < now]
-    
-    if finished.empty:
-        # No races finished yet, return the next one
-        upcoming = schedule[schedule["race_end"] >= now]
-        if not upcoming.empty:
-            return upcoming.iloc[0]["race_end"].to_pydatetime().astimezone(timezone.utc)
-        return None
-    
-    # Check finished races from most recent backwards
-    for idx in range(len(finished) - 1, -1, -1):
-        race = finished.iloc[idx]
-        race_number = int(race["RoundNumber"])
-        
-        # Check if this race has been scored
-        existing_scores = safe_fetch_one(
-            "SELECT 1 FROM race_scores WHERE race_number = %s LIMIT 1",
-            (race_number,)
-        )
-        
-        if not existing_scores:
-            # This race hasn't been scored yet
-            return race["race_end"].to_pydatetime().astimezone(timezone.utc)
-    
-    # All finished races are scored, wait for the next race
+
     upcoming = schedule[schedule["race_end"] >= now]
     if not upcoming.empty:
         return upcoming.iloc[0]["race_end"].to_pydatetime().astimezone(timezone.utc)
-    
+
     return None
 
 async def get_season_end_time(year=None):
