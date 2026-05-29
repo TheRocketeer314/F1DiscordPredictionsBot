@@ -115,3 +115,9 @@ async def poll_results_loop(bot):
             logger.exception("poll_results_loop crashed")
             await asyncio.sleep(60 * 60 / TIME_MULTIPLE)
 
+        finally:
+            #Cleaning cache and recreating it
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            CACHE_DIR.mkdir(exist_ok=True)
+            fastf1.Cache.enable_cache(str(CACHE_DIR))
+
