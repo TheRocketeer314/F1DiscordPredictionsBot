@@ -4,11 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class NoHeadFilter(logging.Filter):
-    def filter(self, record):
-        return 'HEAD' not in record.getMessage()
-
-logging.getLogger('werkzeug').addFilter(NoHeadFilter())
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask('')
 
