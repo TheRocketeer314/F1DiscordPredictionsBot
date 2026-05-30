@@ -1,0 +1,21 @@
+name: Deploy Bot
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GCP VM
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.GCP_VM_IP }}
+          username: ${{ secrets.GCP_VM_USER }}
+          key: ${{ secrets.GCP_SSH_KEY }}
+          script: |
+            cd /home/rishabhkorlahalli/F1DiscordPredictionsBot
+            git pull origin main
+            pip install -r requirements.txt --break-system-packages
+            systemctl restart f1bot
