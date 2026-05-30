@@ -66,14 +66,27 @@ import logging
 import sys
 from utils.git_utils import get_changelog, get_changes
 from CommandsGuide import GUIDE_DICTIONARY
-import subprocess
+from logging.handlers import RotatingFileHandler
 
 sys.stdout.reconfigure(line_buffering=True)
 try:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    file_handler = RotatingFileHandler(
+        'discord.log',
+        maxBytes=50 * 1024 * 1024,
+        backupCount=1,
+        encoding='utf-8'
     )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+
+    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().addHandler(stream_handler)
+
 except Exception as e:
     print("Logging couldn't initialize, error:", e)
 
@@ -82,7 +95,6 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
 keep_alive()
 
@@ -3120,4 +3132,4 @@ async def rescore_all_error(interaction: discord.Interaction, error):
             ephemeral=True
         )
 
-bot.run(token, log_handler=handler, log_level=logging.INFO)
+bot.run(token, log_handler=file_handler, log_level=logging.INFO)
