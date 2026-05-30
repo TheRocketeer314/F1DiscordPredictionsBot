@@ -15,7 +15,12 @@ jobs:
           username: ${{ secrets.GCP_VM_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            cd /home/rishabhkorlahalli/F1DiscordPredictionsBot
+            cd /your/repo/path
+            git fetch origin main
+            CHANGED=$(git diff HEAD origin/main -- requirements.txt)
             git pull origin main
-            pip install -r requirements.txt --break-system-packages
-            systemctl restart f1bot
+            if [ -n "$CHANGED" ]; then
+              echo "requirements.txt changed, reinstalling..."
+              pip install -r requirements.txt --break-system-packages
+            fi
+            sudo systemctl restart f1bot.service
