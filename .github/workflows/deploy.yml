@@ -15,7 +15,7 @@ jobs:
           username: ${{ secrets.GCP_VM_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            cd /your/repo/path
+            cd /home/rishabhkorlahalli/F1DiscordPredictionsBot
             git fetch origin main
             CHANGED=$(git diff HEAD origin/main -- requirements.txt)
             git pull origin main
