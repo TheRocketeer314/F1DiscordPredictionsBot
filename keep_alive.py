@@ -4,6 +4,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+class NoHeadFilter(logging.Filter):
+    def filter(self, record):
+        return 'HEAD' not in record.getMessage()
+
+logging.getLogger('werkzeug').addFilter(NoHeadFilter())
+
 app = Flask('')
 
 @app.route('/')
