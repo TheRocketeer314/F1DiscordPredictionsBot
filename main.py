@@ -94,6 +94,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
 token = os.getenv('DISCORD_TOKEN')
 healthcheck_url = os.getenv('HEALTHCHECK_URL')
 
