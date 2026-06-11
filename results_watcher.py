@@ -33,7 +33,13 @@ async def poll_results_loop(bot):
 
             while delay > 0:
                 logger.info("Waiting %.2f hours until next race ends...", delay / 3600 / TIME_MULTIPLE)
-                await asyncio.sleep(min(delay / TIME_MULTIPLE, 600 / TIME_MULTIPLE))
+
+                if delay > 24 * 3600:
+                    sleep = 6 * 3600
+                else:
+                    sleep = 30 * 60
+
+                await asyncio.sleep(min(delay, sleep) / TIME_MULTIPLE)
                 race_end_time = await get_race_end_time(get_now())
                 if race_end_time is None:
                     break

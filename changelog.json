@@ -1,5 +1,14 @@
 [   
     {
+        "version": "v0.4.3",
+        "date": "2026-06-11",
+        "features": [],
+        "fixes": [
+            "Changes uptime check to send a ping to a URL rather than receiving a ping to be ablke to close unnecessary open ports and reduce attack surface.",
+            "Fixed get_race_end_time fucntion to actualy allow for scoring of completed races rather than just skipping over to the next race repeatedly."
+        ]
+    },
+    {
         "version": "v0.4.2",
         "date": "2026-05-25",
         "features": [],

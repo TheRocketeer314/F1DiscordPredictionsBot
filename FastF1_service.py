@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import fastf1
 from fastf1.ergast import Ergast
 import pandas as pd
+from requests import session
 from database import safe_fetch_one
 from get_now import get_now, SEASON
 
@@ -310,7 +311,6 @@ async def get_final_champions_if_ready(year=None):
     return wdc_winner, wdc_second, wcc_winner, wcc_second
 
 async def get_race_end_time(now):
-    #Get the end time of the next upcoming race.
     try:
         schedule = await asyncio.to_thread(fastf1.get_event_schedule, SEASON)
     except Exception:
@@ -318,12 +318,18 @@ async def get_race_end_time(now):
         return None
 
     schedule["Session5DateUtc"] = pd.to_datetime(
-        schedule["Session5DateUtc"],
-        utc=True,
-        errors="coerce"
+        schedule["Session5DateUtc"], utc=True, errors="coerce"
     )
-
     schedule["race_end"] = schedule["Session5DateUtc"] + pd.Timedelta(hours=12)
+
+    finished = schedule[schedule["race_end"] < now]
+
+    if not finished.empty:
+        for idx in range(len(finished) - 1, -1, -1):
+            race = finished.iloc[idx]
+            race_number = int(race["RoundNumber"])
+            if not safe_fetch_one("SELECT 1 FROM scored_races WHERE race_number = %s", (race_number,)):
+                return race["race_end"].to_pydatetime().astimezone(timezone.utc)
 
     upcoming = schedule[schedule["race_end"] >= now]
     if not upcoming.empty:

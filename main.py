@@ -61,12 +61,12 @@ from results_watcher import poll_results_loop
 from champions_watcher import final_champions_loop
 from get_now import get_now, TIME_MULTIPLE, SEASON
 from scoring import score_race_for_guild, score_final_champions_for_guild
-from keep_alive import keep_alive
 import logging
 import sys
 from utils.git_utils import get_changelog, get_changes
 from CommandsGuide import GUIDE_DICTIONARY
 from logging.handlers import RotatingFileHandler
+import requests
 
 sys.stdout.reconfigure(line_buffering=True)
 try:
@@ -95,12 +95,21 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+healthcheck_url = os.getenv('HEALTHCHECK_URL')
 
-keep_alive()
+def send_heartbeat():
+    try:
+        requests.get(healthcheck_url, timeout=10)
+    except Exception:
+        pass
+
+
+@tasks.loop(minutes=5)
+async def heartbeat():
+    await asyncio.to_thread(send_heartbeat)
 
 # Set up bot intents
 intents = discord.Intents.default()
-intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 #Globals
@@ -242,6 +251,12 @@ async def on_ready():
         upsert_guild(guild.id, guild.name)
         guild_default_lock(guild.id)
         ensure_lock_rows(guild.id)
+
+    if not heartbeat.is_running():
+        heartbeat.start()
+
+    # Send an immediate heartbeat when the bot comes online
+    await asyncio.to_thread(send_heartbeat)
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
