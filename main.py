@@ -99,11 +99,13 @@ token = os.getenv('DISCORD_TOKEN')
 healthcheck_url = os.getenv('HEALTHCHECK_URL')
 
 def send_heartbeat():
+    if healthcheck_url is None:
+        logger.warning("HEALTHCHECK_URL is not set. Heartbeat will not be sent.")
+        return
     try:
         requests.get(healthcheck_url, timeout=10)
     except Exception:
         pass
-
 
 @tasks.loop(minutes=5)
 async def heartbeat():
@@ -2471,7 +2473,7 @@ async def crazy_predictions(interaction: discord.Interaction, user: discord.Memb
 )
 async def bold_predict(interaction: discord.Interaction, prediction: str):
     try:
-        await interaction.response.defer(ephemeral=False)  # defer immediately
+        await interaction.response.defer(ephemeral=True)  # defer immediately
 
         if not predictions_open(interaction.guild.id, get_now(), RACE_CACHE):
             await interaction.followup.send(
@@ -2494,9 +2496,30 @@ async def bold_predict(interaction: discord.Interaction, prediction: str):
         )
 
         await interaction.followup.send(
-            f"🧨 **{user.display_name}** updated their bold prediction for the **{RACE_CACHE.get('race_name')}**:\n> {prediction}",
-            ephemeral=False
-        )
+                    f"Bold prediction saved!",
+                    ephemeral=True
+                )
+        
+        channel_id = get_prediction_channel(interaction.guild.id)
+        if channel_id:
+            try:
+                guild = interaction.guild
+                channel = guild.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+                if channel:
+                    await channel.send(
+                        f"🧨 **{interaction.user.display_name}** submitted their bold prediction for the **{RACE_CACHE.get('race_name')}**:\n"
+                        f"> {prediction}"
+                    )
+            except discord.NotFound:
+                logger.exception("Channel not found for bold pred announcement")
+                await interaction.channel.send(
+                    f"🧨 **{user.display_name}** updated their bold prediction for the **{RACE_CACHE.get('race_name')}**:\n> {prediction}"
+                )
+        
+        else:
+            await interaction.channel.send(
+                f"🧨 **{user.display_name}** updated their bold prediction for the **{RACE_CACHE.get('race_name')}**:\n> {prediction}"
+            )
 
     except Exception:
         logger.exception("bold_predict error")
